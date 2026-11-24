@@ -336,6 +336,9 @@ html[${MODE_ATTR}] [data-testid^="sidebar-project-row-"] {
   padding-bottom: 2px !important;
   margin-bottom: 2px !important;
 }
+html[${MODE_ATTR}] [data-ff-project-title="true"] {
+  color: var(--ff-project-color) !important;
+}
 `);
 
   if (prefs.sharpCorners) {
@@ -1125,6 +1128,7 @@ function applyWebEnhancements(): void {
   const stopInlineViz = mountInlineVisualizeMarkers();
   const stopInlineMedia = mountInlineMediaPreview();
   const stopSquareSpinners = mountSquareSpinners();
+  const stopProjectTitleColors = mountProjectTitleColors();
   const stopSidebarNavGrid = activePrefs.sidebarNavGrid ? mountSidebarNavGrid() : () => {};
 
   activeTeardown = () => {
@@ -1136,6 +1140,7 @@ function applyWebEnhancements(): void {
     document.documentElement.removeAttribute("data-ff-scroll-right");
     document.documentElement.style.removeProperty("--ff-scroll-right");
     stopSidebarNavGrid();
+    stopProjectTitleColors();
     stopSquareSpinners();
     stopInlineMedia();
     stopInlineViz();
@@ -1766,6 +1771,98 @@ function mountSidebarNavGrid(): () => void {
   };
 }
 
+function mountProjectTitleColors(): () => void {
+  if (Platform.OS !== "web") return () => {};
+
+  const coloredRows = new Set<DomElement>();
+  const coloredTitles = new Set<DomElement>();
+  let scheduled = false;
+
+  const findIconBgColor = (iconBox: DomElement): string | null => {
+    if (iconBox.querySelector("img")) return null;
+    const candidates: DomElement[] = [iconBox, ...Array.from(iconBox.querySelectorAll("div"))];
+    for (const el of candidates) {
+      const bg = window.getComputedStyle?.(el)?.backgroundColor;
+      if (bg && !isTransparentColor(bg)) return bg;
+    }
+    return null;
+  };
+
+  const scan = () => {
+    scheduled = false;
+
+    for (const row of Array.from(coloredRows)) {
+      if (!row.isConnected) coloredRows.delete(row);
+    }
+    for (const el of Array.from(coloredTitles)) {
+      if (!el.isConnected) coloredTitles.delete(el);
+    }
+
+    const activeRows = new Set<DomElement>();
+    const activeTitles = new Set<DomElement>();
+
+    for (const row of document.body.querySelectorAll('[data-testid^="sidebar-project-row-"]')) {
+      const rowKids = row.children ? Array.from(row.children) : [];
+      const left = rowKids[0];
+      if (!left || !left.children) continue;
+      const leftKids = Array.from(left.children);
+      const iconBox = leftKids[0];
+      const titleBox = leftKids[1];
+      if (!iconBox || !titleBox) continue;
+
+      const bgColor = findIconBgColor(iconBox);
+      if (!bgColor) continue;
+
+      row.style.setProperty("--ff-project-color", bgColor);
+      coloredRows.add(row);
+      activeRows.add(row);
+
+      const titleTargets: DomElement[] = [titleBox, ...Array.from(titleBox.querySelectorAll("div,span"))];
+      for (const t of titleTargets) {
+        if (t.getAttribute("data-ff-project-title") !== "true") {
+          t.setAttribute("data-ff-project-title", "true");
+        }
+        coloredTitles.add(t);
+        activeTitles.add(t);
+      }
+    }
+
+    for (const row of Array.from(coloredRows)) {
+      if (!activeRows.has(row)) {
+        row.style.removeProperty("--ff-project-color");
+        coloredRows.delete(row);
+      }
+    }
+    for (const el of Array.from(coloredTitles)) {
+      if (!activeTitles.has(el)) {
+        el.removeAttribute("data-ff-project-title");
+        coloredTitles.delete(el);
+      }
+    }
+  };
+
+  const schedule = () => {
+    if (scheduled) return;
+    scheduled = true;
+    void Promise.resolve().then(() => {
+      if (scheduled) scan();
+    });
+  };
+
+  scan();
+  const observer = new MutationObserver(() => schedule());
+  observer.observe(document.body, { childList: true, subtree: true });
+
+  return () => {
+    scheduled = false;
+    observer.disconnect();
+    for (const row of coloredRows) row.style.removeProperty("--ff-project-color");
+    for (const el of coloredTitles) el.removeAttribute("data-ff-project-title");
+    coloredRows.clear();
+    coloredTitles.clear();
+  };
+}
+
 function mountFanframeMotion(): () => void {
   if (Platform.OS !== "web") return () => {};
   const reducedMotion = () =>
@@ -2262,6 +2359,76 @@ export function clearCrossImageUrlCache(): void {
   }
   sharedImageUrlCache.clear();
   sharedImagePending.clear();
+}
+
+export function createWebBlobUrl(bytes: Uint8Array, mimeType: string): string {
+  if (Platform.OS !== "web") return "";
+  return URL.createObjectURL(new Blob([bytes], { type: mimeType }));
+}
+
+export function decodeUtf8Bytes(bytes: Uint8Array, maxChars = 65536): string {
+  if (typeof TextDecoder === "function") {
+    return new TextDecoder("utf-8").decode(bytes).slice(0, maxChars);
+  }
+  let out = "";
+  const limit = Math.min(bytes.length, maxChars);
+  for (let i = 0; i < limit; i++) {
+    out += String.fromCharCode(bytes[i] ?? 0);
+  }
+  return out;
+}
+
+export function mountWebMediaElement(
+  host: unknown,
+  options: {
+    kind: "video" | "audio" | "pdf";
+    bytes: Uint8Array;
+    mime: string;
+    title: string;
+  },
+): () => void {
+  if (Platform.OS !== "web") return () => {};
+  const container = host as DomElement | null;
+  if (!container || typeof container.appendChild !== "function") return () => {};
+
+  const blobUrl = URL.createObjectURL(new Blob([options.bytes], { type: options.mime }));
+  let el: DomElement;
+
+  if (options.kind === "video") {
+    el = document.createElement("video");
+    el.setAttribute("controls", "");
+    el.setAttribute("preload", "metadata");
+    el.setAttribute("playsinline", "");
+    el.setAttribute("src", blobUrl);
+    el.style.setProperty("display", "block");
+    el.style.setProperty("width", "100%");
+    el.style.setProperty("max-height", "360px");
+    el.style.setProperty("height", "auto");
+    el.style.setProperty("background", "#000");
+  } else if (options.kind === "audio") {
+    el = document.createElement("audio");
+    el.setAttribute("controls", "");
+    el.setAttribute("preload", "metadata");
+    el.setAttribute("src", blobUrl);
+    el.style.setProperty("display", "block");
+    el.style.setProperty("width", "100%");
+    el.style.setProperty("padding", "6px 8px");
+    el.style.setProperty("box-sizing", "border-box");
+  } else {
+    el = document.createElement("iframe");
+    el.setAttribute("src", blobUrl);
+    el.setAttribute("title", options.title);
+    el.style.setProperty("display", "block");
+    el.style.setProperty("width", "100%");
+    el.style.setProperty("height", "420px");
+    el.style.setProperty("border", "0");
+  }
+
+  container.appendChild(el);
+  return () => {
+    el.remove();
+    revokeWebPreviewUrl(blobUrl);
+  };
 }
 
 export function revokeWebPreviewUrl(url: string | null | undefined): void {

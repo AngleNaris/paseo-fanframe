@@ -1,0 +1,585 @@
+import {
+  type PluginClientContext,
+  type PluginTimelineItemProps,
+  useRpc,
+} from "@getpaseo/plugin/client";
+import { Icon, Markdown, Modal, ScrollView } from "@getpaseo/plugin/client/ui";
+import { useEffect, useRef, useState } from "react";
+import { Image, Platform, Pressable, Text, View } from "react-native";
+import { inspectMediaRpc, readMediaBytesRpc, type MediaKind } from "../shared/media";
+import {
+  RICH_MESSAGE_TIMELINE_KIND,
+  RICH_MESSAGE_TIMELINE_VERSION,
+  type RichMessageTimelineData,
+  parseRichMessageSegments,
+  richMessageTimelineDataSchema,
+} from "../shared/rich-message";
+import { getVisualizeCardRpc } from "../shared/visualize";
+import {
+  createWebBlobUrl,
+  decodeUtf8Bytes,
+  encodeBytesToDataUri,
+  mountVisualizeCard,
+  mountWebMediaElement,
+  revokeWebPreviewUrl,
+} from "./web";
+
+function formatByteSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+}
+
+function isDarkHex(hex: string): boolean {
+  const clean = hex.replace("#", "").trim();
+  if (clean.length !== 6) return true;
+  const r = parseInt(clean.slice(0, 2), 16);
+  const g = parseInt(clean.slice(2, 4), 16);
+  const b = parseInt(clean.slice(4, 6), 16);
+  if ([r, g, b].some(Number.isNaN)) return true;
+  return (0.299 * r + 0.587 * g + 0.114 * b) / 255 < 0.5;
+}
+
+interface MediaMeta {
+  kind: MediaKind;
+  mime: string;
+  name: string;
+  size: number;
+}
+
+function WebMediaElementSlot({
+  kind,
+  bytes,
+  mime,
+  title,
+  height,
+}: {
+  kind: "video" | "audio" | "pdf";
+  bytes: Uint8Array;
+  mime: string;
+  title: string;
+  height?: number;
+}) {
+  const hostRef = useRef<unknown>(null);
+
+  useEffect(() => {
+    if (Platform.OS !== "web" || !hostRef.current) return;
+    return mountWebMediaElement(hostRef.current, { kind, bytes, mime, title });
+  }, [kind, bytes, mime, title]);
+
+  return (
+    <View
+      ref={hostRef as never}
+      style={{
+        width: "100%",
+        ...(height ? { height } : {}),
+        overflow: "hidden",
+      }}
+    />
+  );
+}
+
+function MediaSegmentCard({
+  path,
+  title,
+  theme,
+  layout,
+}: {
+  path: string;
+  title?: string;
+  theme: PluginTimelineItemProps["theme"];
+  layout: PluginTimelineItemProps["layout"];
+}) {
+  const c = theme.colors;
+  const compact = layout.compact;
+  const isWeb = Platform.OS === "web";
+  const inspectMedia = useRpc(inspectMediaRpc);
+  const readMediaBytes = useRpc(readMediaBytesRpc);
+
+  const [meta, setMeta] = useState<MediaMeta | null>(null);
+  const [bytes, setBytes] = useState<Uint8Array | null>(null);
+  const [imageUri, setImageUri] = useState<string | null>(null);
+  const [imageDims, setImageDims] = useState<{ w: number; h: number } | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [loadingBody, setLoadingBody] = useState(false);
+  const [expanded, setExpanded] = useState(false);
+  const [lightboxOpen, setLightboxOpen] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    let ownedBlobUrl: string | null = null;
+    setLoading(true);
+    setError(null);
+    setMeta(null);
+    setBytes(null);
+    setImageUri(null);
+    setImageDims(null);
+
+    void (async () => {
+      try {
+        const res = await inspectMedia({ path });
+        if (cancelled) return;
+        if (!res.ok || !res.kind || !res.mime) {
+          setError(res.error ?? "无法读取媒体文件");
+          setLoading(false);
+          return;
+        }
+        const nextMeta: MediaMeta = {
+          kind: res.kind,
+          mime: res.mime,
+          name: res.name ?? path,
+          size: res.size ?? 0,
+        };
+        setMeta(nextMeta);
+
+        if (nextMeta.kind === "image" || nextMeta.kind === "audio" || nextMeta.kind === "video") {
+          const data = await readMediaBytes({ path });
+          if (cancelled) return;
+          setBytes(data);
+          if (nextMeta.kind === "image") {
+            const uri = isWeb
+              ? createWebBlobUrl(data, nextMeta.mime)
+              : encodeBytesToDataUri(data, nextMeta.mime);
+            if (isWeb) ownedBlobUrl = uri;
+            setImageUri(uri);
+            Image.getSize(
+              uri,
+              (w, h) => {
+                if (!cancelled && w > 0 && h > 0) setImageDims({ w, h });
+              },
+              () => undefined,
+            );
+          }
+        }
+        setLoading(false);
+      } catch (err) {
+        if (!cancelled) {
+          setError(err instanceof Error ? err.message : "媒体加载失败");
+          setLoading(false);
+        }
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+      if (ownedBlobUrl) revokeWebPreviewUrl(ownedBlobUrl);
+    };
+  }, [path, inspectMedia, readMediaBytes, isWeb]);
+
+  const displayTitle = title?.trim() || meta?.name || path;
+  const sizeLabel = meta && meta.size > 0 ? formatByteSize(meta.size) : "";
+  const maxWidth = compact ? 340 : 640;
+
+  const handleToggleDocument = async () => {
+    const nextOpen = !expanded;
+    setExpanded(nextOpen);
+    if (!nextOpen || bytes || loadingBody) return;
+    setLoadingBody(true);
+    try {
+      const data = await readMediaBytes({ path });
+      setBytes(data);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "读取文件内容失败");
+    } finally {
+      setLoadingBody(false);
+    }
+  };
+
+  if (loading) {
+    return (
+      <View
+        testID="fanframe-media-loading"
+        style={{
+          maxWidth,
+          borderWidth: 1,
+          borderColor: c.border,
+          backgroundColor: c.surface1,
+          paddingHorizontal: 10,
+          paddingVertical: 8,
+          flexDirection: "row",
+          alignItems: "center",
+          gap: 8,
+        }}
+      >
+        <Icon name="File" size={14} color={c.foregroundMuted} />
+        <Text style={{ color: c.foregroundMuted, fontSize: 12.5 }} numberOfLines={1}>
+          正在加载 {displayTitle}...
+        </Text>
+      </View>
+    );
+  }
+
+  if (error || !meta) {
+    return (
+      <View
+        testID="fanframe-media-error"
+        style={{
+          maxWidth,
+          borderWidth: 1,
+          borderColor: c.border,
+          backgroundColor: c.surface1,
+          paddingHorizontal: 10,
+          paddingVertical: 8,
+          gap: 3,
+        }}
+      >
+        <Text style={{ color: c.foreground, fontSize: 12.5, fontWeight: "600" }} numberOfLines={1}>
+          {displayTitle}
+        </Text>
+        <Text style={{ color: c.foregroundMuted, fontSize: 12 }}>
+          媒体预览不可用：{error ?? "文件不可访问"}
+        </Text>
+      </View>
+    );
+  }
+
+  if (meta.kind === "image" && imageUri) {
+    const maxW = compact ? 320 : 620;
+    const maxH = 420;
+    let displayW = Math.min(maxW, 320);
+    let displayH = 220;
+    if (imageDims && imageDims.w > 0 && imageDims.h > 0) {
+      const scale = Math.min(1, maxW / imageDims.w, maxH / imageDims.h);
+      displayW = Math.max(80, Math.round(imageDims.w * scale));
+      displayH = Math.max(60, Math.round(imageDims.h * scale));
+    }
+    return (
+      <>
+        <View
+          testID="fanframe-media-image"
+          style={{
+            alignSelf: "flex-start",
+            maxWidth,
+            borderWidth: 1,
+            borderColor: c.border,
+            backgroundColor: c.surface1,
+          }}
+        >
+          <View
+            style={{
+              flexDirection: "row",
+              alignItems: "center",
+              justifyContent: "space-between",
+              gap: 10,
+              paddingHorizontal: 10,
+              paddingVertical: 6,
+              backgroundColor: c.surface2,
+              borderBottomWidth: 1,
+              borderBottomColor: c.border,
+            }}
+          >
+            <Text
+              style={{ color: c.foreground, fontSize: 12, fontWeight: "600", flexShrink: 1 }}
+              numberOfLines={1}
+            >
+              {displayTitle}
+            </Text>
+            {sizeLabel ? (
+              <Text style={{ color: c.foregroundMuted, fontSize: 11.5 }}>{sizeLabel}</Text>
+            ) : null}
+          </View>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel={`放大查看 ${displayTitle}`}
+            onPress={() => setLightboxOpen(true)}
+          >
+            <Image
+              source={{ uri: imageUri }}
+              resizeMode="contain"
+              style={{ width: displayW, height: displayH, backgroundColor: c.surface0 }}
+            />
+          </Pressable>
+        </View>
+
+        <Modal title={displayTitle} open={lightboxOpen} onOpenChange={setLightboxOpen}>
+          <Modal.Content scrollable={false} style={{ padding: 12 }}>
+            <View style={{ alignItems: "center", justifyContent: "center" }}>
+              <Image
+                source={{ uri: imageUri }}
+                resizeMode="contain"
+                style={{
+                  width: compact ? 320 : 860,
+                  height: compact ? 360 : 580,
+                  maxWidth: "100%",
+                }}
+              />
+            </View>
+          </Modal.Content>
+        </Modal>
+      </>
+    );
+  }
+
+  if ((meta.kind === "audio" || meta.kind === "video") && bytes) {
+    return (
+      <View
+        testID={`fanframe-media-${meta.kind}`}
+        style={{
+          width: "100%",
+          maxWidth,
+          borderWidth: 1,
+          borderColor: c.border,
+          backgroundColor: c.surface1,
+        }}
+      >
+        <View
+          style={{
+            flexDirection: "row",
+            alignItems: "center",
+            justifyContent: "space-between",
+            gap: 10,
+            paddingHorizontal: 10,
+            paddingVertical: 6,
+            backgroundColor: c.surface2,
+            borderBottomWidth: 1,
+            borderBottomColor: c.border,
+          }}
+        >
+          <View style={{ flexDirection: "row", alignItems: "center", gap: 6, flexShrink: 1 }}>
+            <Icon
+              name={meta.kind === "audio" ? "Volume2" : "Film"}
+              size={13}
+              color={c.foregroundMuted}
+            />
+            <Text
+              style={{ color: c.foreground, fontSize: 12, fontWeight: "600", flexShrink: 1 }}
+              numberOfLines={1}
+            >
+              {displayTitle}
+            </Text>
+          </View>
+          {sizeLabel ? (
+            <Text style={{ color: c.foregroundMuted, fontSize: 11.5 }}>{sizeLabel}</Text>
+          ) : null}
+        </View>
+        {isWeb ? (
+          <WebMediaElementSlot
+            kind={meta.kind}
+            bytes={bytes}
+            mime={meta.mime}
+            title={displayTitle}
+          />
+        ) : (
+          <View style={{ padding: 10 }}>
+            <Text style={{ color: c.foregroundMuted, fontSize: 12 }}>
+              当前客户端暂不支持内嵌播放此{meta.kind === "audio" ? "音频" : "视频"}，请在桌面或网页端查看。
+            </Text>
+          </View>
+        )}
+      </View>
+    );
+  }
+
+  // PDF or text expandable preview.
+  return (
+    <View
+      testID={`fanframe-media-${meta.kind}`}
+      style={{
+        width: "100%",
+        maxWidth,
+        borderWidth: 1,
+        borderColor: c.border,
+        backgroundColor: c.surface1,
+      }}
+    >
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel={`${expanded ? "收起" : "展开"} ${displayTitle}`}
+        onPress={() => {
+          void handleToggleDocument();
+        }}
+        style={{
+          flexDirection: "row",
+          alignItems: "center",
+          justifyContent: "space-between",
+          gap: 10,
+          paddingHorizontal: 10,
+          paddingVertical: 7,
+          backgroundColor: c.surface2,
+        }}
+      >
+        <View style={{ flexDirection: "row", alignItems: "center", gap: 6, flexShrink: 1 }}>
+          <Icon name={expanded ? "ChevronDown" : "ChevronRight"} size={13} color={c.foregroundMuted} />
+          <Text
+            style={{ color: c.foreground, fontSize: 12, fontWeight: "600", flexShrink: 1 }}
+            numberOfLines={1}
+          >
+            {displayTitle}
+          </Text>
+        </View>
+        <Text style={{ color: c.foregroundMuted, fontSize: 11.5 }}>
+          {meta.kind.toUpperCase()}
+          {sizeLabel ? ` · ${sizeLabel}` : ""}
+        </Text>
+      </Pressable>
+
+      {expanded ? (
+        <View style={{ borderTopWidth: 1, borderTopColor: c.border }}>
+          {loadingBody ? (
+            <Text style={{ color: c.foregroundMuted, fontSize: 12, padding: 10 }}>
+              正在读取文件内容...
+            </Text>
+          ) : bytes ? (
+            meta.kind === "pdf" && isWeb ? (
+              <WebMediaElementSlot
+                kind="pdf"
+                bytes={bytes}
+                mime={meta.mime}
+                title={displayTitle}
+                height={420}
+              />
+            ) : (
+              <ScrollView style={{ maxHeight: 360, padding: 10 }}>
+                <Text
+                  selectable
+                  style={{
+                    color: c.foreground,
+                    fontSize: 12,
+                    lineHeight: 18,
+                  }}
+                >
+                  {decodeUtf8Bytes(bytes, 65536)}
+                </Text>
+              </ScrollView>
+            )
+          ) : null}
+        </View>
+      ) : null}
+    </View>
+  );
+}
+
+function InlineVizSegmentCard({
+  cardId,
+  theme,
+}: {
+  cardId: string;
+  theme: PluginTimelineItemProps["theme"];
+}) {
+  const c = theme.colors;
+  const fetchCard = useRpc(getVisualizeCardRpc);
+  const hostRef = useRef<unknown>(null);
+  const [card, setCard] = useState<{ title: string; html: string } | null>(null);
+  const [height, setHeight] = useState(180);
+
+  useEffect(() => {
+    let cancelled = false;
+    void fetchCard({ cardId }).then((res) => {
+      if (!cancelled && res) setCard(res);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [cardId, fetchCard]);
+
+  useEffect(() => {
+    if (Platform.OS !== "web" || !card || !hostRef.current) return;
+    return mountVisualizeCard({
+      host: hostRef.current,
+      channel: `${cardId}-rich`,
+      html: card.html,
+      isDark: isDarkHex(c.surface0),
+      colors: {
+        background: c.surface0,
+        foreground: c.foreground,
+        muted: c.foregroundMuted,
+        border: c.border,
+        accent: c.accent,
+      },
+      onHeight: (nextH) => {
+        if (nextH > 24 && nextH < 2400) setHeight(Math.ceil(nextH));
+      },
+    });
+  }, [card, cardId, c.accent, c.border, c.foreground, c.foregroundMuted, c.surface0]);
+
+  if (!card) return null;
+
+  return (
+    <View
+      testID="fanframe-rich-viz"
+      style={{
+        borderWidth: 1,
+        borderColor: c.border,
+        backgroundColor: c.surface1,
+        overflow: "hidden",
+      }}
+    >
+      <View
+        style={{
+          paddingHorizontal: 12,
+          paddingVertical: 7,
+          backgroundColor: c.surface2,
+          borderBottomWidth: 1,
+          borderBottomColor: c.border,
+        }}
+      >
+        <Text style={{ color: c.foreground, fontSize: 12.5, fontWeight: "600" }} numberOfLines={1}>
+          {card.title}
+        </Text>
+      </View>
+      <View ref={hostRef as never} style={{ width: "100%", height, overflow: "hidden" }} />
+    </View>
+  );
+}
+
+function FanframeRichMessageCard({
+  item,
+  theme,
+  layout,
+}: PluginTimelineItemProps<RichMessageTimelineData>) {
+  return (
+    <View testID="fanframe-rich-message" style={{ gap: 10 }}>
+      {item.data.segments.map((seg, idx) => {
+        if (seg.kind === "markdown") {
+          return <Markdown key={`md-${idx}`}>{seg.text}</Markdown>;
+        }
+        if (seg.kind === "media") {
+          return (
+            <MediaSegmentCard
+              key={`media-${idx}-${seg.path}`}
+              path={seg.path}
+              title={seg.title}
+              theme={theme}
+              layout={layout}
+            />
+          );
+        }
+        return <InlineVizSegmentCard key={`viz-${idx}-${seg.cardId}`} cardId={seg.cardId} theme={theme} />;
+      })}
+    </View>
+  );
+}
+
+export function contributeRichMessage(client: PluginClientContext): () => void {
+  const removeTransformer = client.addTimelineTransformer({
+    id: "fanframe-rich-message",
+    query: { itemType: "assistant_message" },
+    transform: ({ item }) => {
+      const parsed = parseRichMessageSegments(item.text);
+      if (!parsed) return undefined;
+      return {
+        items: [
+          {
+            type: "plugin",
+            kind: RICH_MESSAGE_TIMELINE_KIND,
+            version: RICH_MESSAGE_TIMELINE_VERSION,
+            data: parsed,
+          },
+        ],
+      };
+    },
+  });
+
+  const removeRenderer = client.addTimelineRenderer({
+    kind: RICH_MESSAGE_TIMELINE_KIND,
+    version: RICH_MESSAGE_TIMELINE_VERSION,
+    schema: richMessageTimelineDataSchema,
+    Component: FanframeRichMessageCard,
+  });
+
+  return () => {
+    removeRenderer();
+    removeTransformer();
+  };
+}
