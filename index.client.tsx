@@ -1,0 +1,49 @@
+import type { PluginClientContext } from "@getpaseo/plugin/client";
+import { contributeAskQuestion } from "./client/ask-question";
+import { contributeCrossImage } from "./client/cross-image";
+import { FanframeSettings } from "./client/settings";
+import { FANFRAME_DARK_THEME, FANFRAME_LIGHT_THEME } from "./client/themes";
+import { FanframeVisualizeCard } from "./client/visualize";
+import { installFanframeWeb } from "./client/web";
+import { inspectMediaRpc, readMediaBytesRpc } from "./shared/media";
+import {
+  getVisualizeCardRpc,
+  VISUALIZE_TIMELINE_KIND,
+  VISUALIZE_TIMELINE_VERSION,
+  visualizeTimelineDataSchema,
+} from "./shared/visualize";
+
+export default function contribute(client: PluginClientContext) {
+  const removeDark = client.addTheme(FANFRAME_DARK_THEME);
+  const removeLight = client.addTheme(FANFRAME_LIGHT_THEME);
+  const removeSettings = client.addSettingsScreen({
+    id: "fanframe-settings",
+    title: "FanFrame",
+    icon: "Sparkles",
+    Component: FanframeSettings,
+  });
+  const removeVisualizer = client.addTimelineRenderer({
+    kind: VISUALIZE_TIMELINE_KIND,
+    version: VISUALIZE_TIMELINE_VERSION,
+    schema: visualizeTimelineDataSchema,
+    Component: FanframeVisualizeCard,
+  });
+  const cleanupWeb = installFanframeWeb({
+    fetchVisualizeCard: (cardId) => client.rpc(getVisualizeCardRpc, { cardId }),
+    inspectMedia: (path) => client.rpc(inspectMediaRpc, { path }),
+    readMediaBytes: (path) => client.rpc(readMediaBytesRpc, { path }),
+  });
+
+  const cleanupCrossImage = contributeCrossImage(client);
+  const cleanupAskQuestion = contributeAskQuestion(client);
+
+  return () => {
+    cleanupAskQuestion();
+    cleanupCrossImage();
+    cleanupWeb();
+    removeVisualizer();
+    removeSettings();
+    removeLight();
+    removeDark();
+  };
+}
