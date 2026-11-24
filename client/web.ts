@@ -322,12 +322,19 @@ html[${MODE_ATTR}="dark"] [data-testid="context-window-meter"] svg circle[stroke
 html[${MODE_ATTR}="light"] [data-testid="context-window-meter"] svg circle[stroke-dasharray][stroke="#f59e0b" i] {
   stroke: #d97706 !important;
 }
-/* FanFrame: Match sidebar workspace row height (28px) to top-left sidebar nav buttons */
+/* FanFrame: Match sidebar project & workspace row height (28px) to top-left sidebar nav buttons */
 html[${MODE_ATTR}] [data-testid^="sidebar-workspace-row-"],
 html[${MODE_ATTR}] [data-testid^="sidebar-project-new-workspace-row-"] {
   min-height: 28px !important;
   padding-top: 4px !important;
   padding-bottom: 4px !important;
+}
+html[${MODE_ATTR}] [data-testid^="sidebar-project-row-"] {
+  min-height: 28px !important;
+  height: 28px !important;
+  padding-top: 2px !important;
+  padding-bottom: 2px !important;
+  margin-bottom: 2px !important;
 }
 `);
 
