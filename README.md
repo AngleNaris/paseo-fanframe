@@ -8,8 +8,9 @@
     <a href="#preview--效果预览">Preview</a> ·
     <a href="#install--安装">Install</a> ·
     <a href="#features--功能特性">Features</a> ·
+    <a href="#interactive-visualizations--内嵌可视化">Visualizations</a> ·
+    <a href="#motion--micro-animations--克制动效系统">Motion</a> ·
     <a href="#configuration--配置开关">Configuration</a> ·
-    <a href="#media--visualization-blocks--内嵌媒体与图表">Media &amp; Viz</a> ·
     <a href="#data--privacy--数据与权限边界">Privacy</a>
   </p>
 </div>
@@ -46,7 +47,29 @@
 - **Interactive Question Cards** — Automatically upgrades plain-text `[1] / [2]` option prompts (e.g. Antigravity over ACP) into clickable multi-step cards with auto-advance, one-tap recommended selection, custom notes, and automatic collapse once answered.
 - **Host-Scoped Inline Media & Custom Player** — Renders ` ```fanframe-media ` blocks across **both local and remote hosts**, featuring layout-preserving loading skeletons with animated progress bars, lightbox image zoom, expandable PDF/text previews, and a custom sharp-cornered audio/video player (play/pause, drag scrubber, mute, fullscreen, download).
 - **Cross-Device Compressed Image Upload** — Adds a composer `传图` pill with client-side compression (or optional original quality), storing shared copies on the host so uploaded images stay visible across desktop and mobile clients.
-- **Sandboxed Interactive Visualizations** — Provides the `fanframe_visualize` agent tool for lightweight HTML/SVG/Canvas cards rendered inside strict `sandbox="allow-scripts"` iframes (`default-src 'none'`).
+
+---
+
+## Interactive Visualizations · 内嵌可视化
+
+FanFrame equips every agent session with the built-in **`fanframe_visualize`** tool so data trends, comparisons, distributions, and interactive calculators render directly inside the conversation instead of walls of numbers:
+
+- **Graphics-First & Zero Friction** — Agents proactively generate clean HTML / SVG / Canvas cards when structured data benefits from visual encoding; cards can be placed inline anywhere in a reply via `[[fanframe-viz:<cardId>]]` or appended cleanly at turn end.
+- **Strict Sandbox & Auto-Sizing** — Every card runs inside an isolated `sandbox="allow-scripts"` iframe (`Content-Security-Policy: default-src 'none'`, zero external requests) with automatic height tracking via `ResizeObserver` and `MutationObserver`.
+- **Theme-Synced Tokens & Controls** — Automatically injects dark/light palette variables (`--fanframe-viz-series-1` soft amber, `--fanframe-viz-series-2` mist blue, `--fanframe-viz-highlight` teal, surface/border/muted tokens), styled sharp-cornered native controls (`<button>`, `<select>`, `<input type="checkbox">`, and diamond-thumb `<input type="range">` sliders), plus 15 built-in stroke SVG icons (`sun`, `cloud`, `trend-up`, `trend-down`, `calendar`, `clock`, etc.).
+- **Smooth Placeholder Loading** — Reserves the card frame with an animated progress sweep while fetching cached card HTML across local or remote hosts.
+
+---
+
+## Motion & Micro-Animations · 克制动效系统
+
+FanFrame replaces abrupt UI snapping with a calm, sharp-edged motion language designed to stay unobtrusive during long sessions:
+
+- **Interactive Micro-Transitions** — 140ms–180ms `cubic-bezier` transitions on background, ink, border, opacity, and icon states across buttons, tabs, switches, menus, and tool-call badges.
+- **Fluid Expand & Collapse Disclosures** — Smooth height + fade transitions on both expansion (`200ms`) and collapse (`160ms` via lightweight ghost snapshots), so collapsible tool panels and sections glide open and shut instead of popping.
+- **Square-Perimeter Orbit Spinner** — Transforms rounded spinning borders into a crisp 0px square-orbit conic-gradient progress ring (`900ms`) that fits FanFrame's angular aesthetic, while removing redundant overlapping tab spinners.
+- **Animated Loading Sweep Bars** — Pre-sized skeletons for images, audio/video players, documents, and visualization cards carry a 2px accent sweep bar so remote assets settle into place without sudden layout jumps.
+- **Reduced-Motion Friendly** — Automatically honors `prefers-reduced-motion: reduce`, disabling orbit and disclosure motion cleanly when requested by the OS.
 
 ---
 
