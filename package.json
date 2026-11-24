@@ -1,11 +1,19 @@
 {
   "name": "paseo-fanframe",
   "private": true,
-  "version": "0.0.0",
+  "version": "0.1.0",
+  "description": "Sharp-cornered dark and light themes with prose brightness layering, compact sidebar grid, interactive question cards, cross-device image uploads, and inline media/visualization players for Paseo.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/AngleNaris/paseo-fanframe.git"
+  },
   "files": [
     "paseo-plugin.json",
     "OVERVIEW.md",
     "OVERVIEW.*.md",
+    "LICENSE",
+    "assets/",
     "index.client.ts",
     "index.client.tsx",
     "index.server.ts",

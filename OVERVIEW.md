@@ -1,5 +1,15 @@
-FanFrame brings a sharp-cornered, low-saturation dark and light aesthetic and quality-of-life enhancements to Paseo.
+FanFrame brings a sharp-cornered, low-saturation dark and light aesthetic and reading/interaction refinements to Paseo.
 
-It contributes two built-in Appearance themes (FanFrame Dark and FanFrame Light), a timeline renderer that turns plain-text `[1] / [2]` question prompts into interactive selection cards, a cross-device compressed image upload composer pill, inline visualization and local media previews, and optional desktop/web visual refinements: global 0px corners with solid opaque menus and non-outline focus feedback, low-saturation Markdown syntax coloring, perceptually stepped three-tier prose brightness layering, subtle interaction motion, and a compact three-column sidebar navigation grid.
+It contributes two Appearance themes (FanFrame Dark and FanFrame Light), interactive question cards that turn plain-text numbered option prompts into clickable choices, a cross-device compressed image upload button in the composer, inline visualization cards and local media previews with custom sharp-cornered audio/video players, and optional desktop/web refinements including 0px corners, low-saturation Markdown syntax colors, perceptually stepped three-tier prose brightness layering, subtle interaction transitions, project-colored sidebar titles, and a three-column sidebar navigation grid.
 
-Select FanFrame Dark or FanFrame Light in Settings -> Appearance, and toggle individual modules in Settings -> Plugins -> FanFrame. All enhancements clean up automatically when disabled or removed.
+## Setup
+
+Select FanFrame Dark or FanFrame Light under Settings -> Appearance. Toggle individual visual and interaction modules under Settings -> Plugins -> FanFrame. No external accounts, tokens, or extra binaries are required. Works on Paseo 0.16.0 or later across desktop and web clients; native mobile clients receive the themes, interactive question cards, and cross-device image timeline items.
+
+## Capabilities, data access, and limits
+
+- **Themes and web/desktop visual modules**: Visual toggles are saved locally in browser `localStorage`. All injected styles and observers clean up automatically when disabled or removed.
+- **Interactive question cards**: Detects structured `[1] / [2]` option lists in assistant messages (such as ACP providers that fall back to text questions) and sends the selected choices back as a normal user message to the active agent.
+- **Cross-device image upload**: Compresses selected images on the client (with an optional original-quality switch), stores copies on the daemon host under `~/.paseo/plugin-data/paseo-fanframe/shared-images/` (automatically pruned by age and count), and sends the images as attachments to the active agent provider.
+- **Inline media previews**: When an assistant message includes a `fanframe-media` (or `dsh-media`) fenced JSON block with an absolute path on the conversation's host, the server handler inspects and streams that file to the client for inline image, audio, video, PDF, or text preview, restricted to supported extensions and per-type size limits.
+- **Inline visualization cards**: Registers the `fanframe_visualize` agent tool and a short session guidance prompt so agents can emit self-contained HTML/SVG/canvas cards rendered inside sandboxed iframes (`sandbox="allow-scripts"`, CSP `default-src 'none'`, no network access).

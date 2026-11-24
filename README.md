@@ -1,0 +1,120 @@
+<div align="center">
+  <img src="./assets/icon.svg" alt="FanFrame · 繁界" width="88" height="88" />
+  <h1>繁界 · FanFrame</h1>
+  <p><strong>Sharp-cornered gothic-minimal themes &amp; reading/media enhancements for Paseo.</strong></p>
+  <p>为 <a href="https://paseo.sh">Paseo</a> 打造的低饱和深浅双色直角主题，兼顾长文阅读层次、紧凑侧栏、AI 提问点选卡片与跨主机媒体播放。</p>
+
+  <p>
+    <a href="#install--安装">Install</a> ·
+    <a href="#features--功能特性">Features</a> ·
+    <a href="#configuration--配置开关">Configuration</a> ·
+    <a href="#media--visualization-blocks--内嵌媒体与图表">Media &amp; Viz</a> ·
+    <a href="#data--privacy--数据与权限边界">Privacy</a>
+  </p>
+</div>
+
+---
+
+## Features · 功能特性
+
+### 🎨 Themes & Visual Refinement · 主题与视觉层次
+- **FanFrame Dark / FanFrame Light** — Two low-saturation, eye-friendly palettes (`Settings → Appearance`) tailored for long coding and reading sessions.
+- **Sharp 0px Geometry & Solid Overlays** — Removes rounded bubbles, translucent blur overlays, and harsh focus outlines in favor of crisp 1px borders and clean color-change focus cues.
+- **Low-Saturation Markdown Palette** — Distinct, restrained hues for headings, bold, italic, inline code, quotes, markers, and tables across both dark and light modes.
+- **Perceptual 3-Tier Prose Layering** — Uses CSS Custom Highlight API + OKLab equal-step luminance tiers (plus steel-blue brackets and warm-amber numbers) to give dense paragraphs effortless visual rhythm without altering text selection or copy behavior.
+- **Restrained Motion** — Subtle micro-transitions for controls, square-orbit running spinners, and smooth expand/collapse feedback that respects `prefers-reduced-motion`.
+
+### 🧭 Sidebar Density · 侧栏布局优化
+- **3-Column Top Navigation Grid** — Compresses the top sidebar links (`History`, `Search`, `Schedules`, and plugin items) into a compact 3-column icon-left/text-right grid with automatic ellipsis, cutting header height in half on both desktop and mobile web.
+- **Unified 28px Row Cadence** — Aligns project rows, workspace rows, and nav buttons to the same clean 28px height.
+- **Project-Matched Title Colors** — Automatically tints project titles to match their letter-badge icon colors for instant visual scanning.
+
+### ⚡ Interaction & Cross-Host Media · 交互与跨主机媒体
+- **Interactive Question Cards** — Automatically upgrades plain-text `[1] / [2]` option prompts (e.g. Antigravity over ACP) into clickable multi-step cards with auto-advance, one-tap recommended selection, custom notes, and automatic collapse once answered.
+- **Host-Scoped Inline Media & Custom Player** — Renders ` ```fanframe-media ` blocks across **both local and remote hosts**, featuring layout-preserving loading skeletons with animated progress bars, lightbox image zoom, expandable PDF/text previews, and a custom sharp-cornered audio/video player (play/pause, drag scrubber, mute, fullscreen, download).
+- **Cross-Device Compressed Image Upload** — Adds a composer `传图` pill with client-side compression (or optional original quality), storing shared copies on the host so uploaded images stay visible across desktop and mobile clients.
+- **Sandboxed Interactive Visualizations** — Provides the `fanframe_visualize` agent tool for lightweight HTML/SVG/Canvas cards rendered inside strict `sandbox="allow-scripts"` iframes (`default-src 'none'`).
+
+---
+
+## Install · 安装
+
+Enable plugins first in Paseo (**Settings → Plugins → Enable plugins**), then run:
+
+```bash
+paseo plugin install https://github.com/AngleNaris/paseo-fanframe.git
+```
+
+Update to the latest version anytime:
+
+```bash
+paseo plugin update paseo-fanframe
+```
+
+After installation:
+1. Open **Settings → Appearance** and select **FanFrame Dark · 繁界深色** or **FanFrame Light · 繁界浅色**.
+2. Open **Settings → Plugins → FanFrame** to toggle individual modules.
+
+> **Multi-host tip · 多主机提示**: When using Paseo across a local machine and remote hosts, install/update `paseo-fanframe` on each daemon host whose conversations use inline media previews, cross-device image uploads, or `fanframe_visualize`.
+
+---
+
+## Configuration · 配置开关
+
+Every enhancement can be toggled independently in **Settings → Plugins → FanFrame** and cleans up automatically when turned off:
+
+| Module | Default | Description |
+| :--- | :---: | :--- |
+| **Sharp Corners & Solid Overlays** | On | 0px corners, opaque popups, non-outline focus, square running spinner |
+| **Low-Saturation Markdown Palette** | On | Adaptive dark/light syntax colors for Markdown elements |
+| **3-Tier Prose Brightness Layering** | On | Clause-level OKLab luminance rhythm + bracket/number accents |
+| **Restrained Micro-Motion** | On | Smooth color & disclosure transitions (`prefers-reduced-motion` aware) |
+| **Cross-Device Image Pill (`传图`)** | On | Compressed image upload button in the composer track bar |
+| **3-Column Sidebar Nav Grid** | On | Compact 3-column grid for top sidebar navigation (desktop & mobile web) |
+| **Interactive AI Question Cards** | On | Upgrades `[1] / [2]` text prompts into clickable selection panels |
+
+---
+
+## Media & Visualization Blocks · 内嵌媒体与图表
+
+Agents on any connected host can embed local media inline using a fenced `fanframe-media` (or `dsh-media`) JSON block:
+
+````markdown
+```fanframe-media
+{"path": "/absolute/path/to/preview.png", "title": "Preview image"}
+```
+````
+
+Supported formats:
+- **Images**: `.png`, `.jpg`, `.jpeg`, `.webp`, `.gif` (up to 24 MiB, click to zoom)
+- **Audio**: `.wav`, `.mp3`, `.ogg`, `.m4a`, `.flac` (up to 32–48 MiB, custom sharp player)
+- **Video**: `.mp4`, `.webm`, `.mov`, `.m4v` (up to 128 MiB, custom sharp player + fullscreen)
+- **Documents**: `.pdf` (up to 32 MiB), `.txt`, `.md`, `.csv`, `.tsv`, `.json` (up to 2 MiB, expandable)
+
+For interactive charts, agents can call the built-in `fanframe_visualize` tool and optionally place `[[fanframe-viz:<cardId>]]` inline in their reply.
+
+---
+
+## Data & Privacy · 数据与权限边界
+
+- **No external network calls or telemetry**: Everything runs locally between your Paseo client and your own connected daemon host(s).
+- **Local storage**: Visual toggle states are stored in browser `localStorage`; cross-device uploaded images are stored under `~/.paseo/plugin-data/paseo-fanframe/shared-images/` (auto-pruned by age and count) and forwarded as prompt attachments to the selected agent provider.
+- **Host file reads**: Inline media previews read only the explicit absolute file paths referenced inside `fanframe-media` blocks on that conversation's host, bounded by extension allowlist and size limits.
+- **Sandboxed visualizations**: All `fanframe_visualize` cards render inside `sandbox="allow-scripts"` iframes with `Content-Security-Policy: default-src 'none'`.
+
+---
+
+## Development · 开发
+
+```bash
+npm install
+npm run typecheck
+paseo plugin install /absolute/path/to/paseo-fanframe
+paseo plugin reload paseo-fanframe
+```
+
+---
+
+## License
+
+[MIT](./LICENSE) © FanFrame contributors
