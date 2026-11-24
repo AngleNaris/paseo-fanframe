@@ -8,7 +8,7 @@ import {
 } from "@getpaseo/plugin/client";
 import { Icon, Modal, ScrollView, TextInput, useToast } from "@getpaseo/plugin/client/ui";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Image, Platform, Pressable, Text, View } from "react-native";
+import { Animated, Easing, Image, Platform, Pressable, Text, View } from "react-native";
 import {
   CROSS_IMAGE_TIMELINE_KIND,
   CROSS_IMAGE_TIMELINE_VERSION,
@@ -565,6 +565,79 @@ interface ImageSlotProps {
   onOpen(uri: string): void;
 }
 
+function CrossImageLoadingBox({
+  width,
+  height,
+  sizeBytes,
+  theme,
+}: {
+  width: number;
+  height: number;
+  sizeBytes: number;
+  theme: PluginTimelineItemProps["theme"];
+}) {
+  const c = theme.colors;
+  const progress = useRef(new Animated.Value(0)).current;
+
+  useEffect(() => {
+    const anim = Animated.loop(
+      Animated.timing(progress, {
+        toValue: 1,
+        duration: 1150,
+        easing: Easing.inOut(Easing.ease),
+        useNativeDriver: false,
+      }),
+    );
+    anim.start();
+    return () => anim.stop();
+  }, [progress]);
+
+  const left = progress.interpolate({
+    inputRange: [0, 1],
+    outputRange: ["-38%", "100%"],
+  });
+
+  return (
+    <View
+      style={{
+        width,
+        height,
+        borderWidth: 1,
+        borderColor: c.border,
+        backgroundColor: c.surface1,
+        overflow: "hidden",
+      }}
+    >
+      <View
+        style={{
+          width: "100%",
+          height: 2,
+          backgroundColor: c.surface2,
+          overflow: "hidden",
+          position: "relative",
+        }}
+      >
+        <Animated.View
+          style={{
+            position: "absolute",
+            top: 0,
+            bottom: 0,
+            width: "38%",
+            left,
+            backgroundColor: c.accent,
+          }}
+        />
+      </View>
+      <View style={{ flex: 1, alignItems: "center", justifyContent: "center", gap: 6, padding: 8 }}>
+        <Icon name="Image" size={18} color={c.foregroundMuted} />
+        <Text style={{ color: c.foregroundMuted, fontSize: 12 }}>
+          载入图片{sizeBytes > 0 ? ` · ${formatBytes(sizeBytes)}` : "..."}
+        </Text>
+      </View>
+    </View>
+  );
+}
+
 function SharedImageSlot({
   meta,
   displayWidth,
@@ -625,19 +698,12 @@ function SharedImageSlot({
 
   if (!uri) {
     return (
-      <View
-        style={{
-          width: displayWidth,
-          height: displayHeight,
-          borderWidth: 1,
-          borderColor: c.border,
-          backgroundColor: c.surface2,
-          alignItems: "center",
-          justifyContent: "center",
-        }}
-      >
-        <Text style={{ color: c.foregroundMuted, fontSize: 12 }}>加载图片…</Text>
-      </View>
+      <CrossImageLoadingBox
+        width={displayWidth}
+        height={displayHeight}
+        sizeBytes={meta.size}
+        theme={theme}
+      />
     );
   }
 

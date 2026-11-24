@@ -5,7 +5,7 @@ import {
 } from "@getpaseo/plugin/client";
 import { Icon, Markdown, Modal, ScrollView } from "@getpaseo/plugin/client/ui";
 import { useEffect, useRef, useState } from "react";
-import { Image, Platform, Pressable, Text, View } from "react-native";
+import { Animated, Easing, Image, Platform, Pressable, Text, View } from "react-native";
 import { inspectMediaRpc, readMediaBytesRpc, type MediaKind } from "../shared/media";
 import {
   RICH_MESSAGE_TIMELINE_KIND,
@@ -34,6 +34,75 @@ function formatMediaTime(seconds: number): string {
   const mins = Math.floor(total / 60);
   const secs = total % 60;
   return `${mins}:${secs < 10 ? "0" : ""}${secs}`;
+}
+
+function inferKindFromPath(rawPath: string): MediaKind | null {
+  const clean = rawPath.trim().split(/[?#]/)[0] ?? "";
+  const dot = clean.lastIndexOf(".");
+  if (dot < 0) return null;
+  const ext = clean.slice(dot).toLowerCase();
+  if ([".png", ".jpg", ".jpeg", ".webp", ".gif"].includes(ext)) return "image";
+  if ([".mp3", ".wav", ".ogg", ".m4a", ".flac"].includes(ext)) return "audio";
+  if ([".mp4", ".webm", ".mov", ".m4v"].includes(ext)) return "video";
+  if (ext === ".pdf") return "pdf";
+  if ([".txt", ".md", ".csv", ".tsv", ".json"].includes(ext)) return "text";
+  return null;
+}
+
+function FanframeProgressBar({
+  color,
+  trackColor,
+  height = 2,
+}: {
+  color: string;
+  trackColor: string;
+  height?: number;
+}) {
+  const progress = useRef(new Animated.Value(0)).current;
+
+  useEffect(() => {
+    const anim = Animated.loop(
+      Animated.timing(progress, {
+        toValue: 1,
+        duration: 1150,
+        easing: Easing.inOut(Easing.ease),
+        useNativeDriver: false,
+      }),
+    );
+    anim.start();
+    return () => {
+      anim.stop();
+    };
+  }, [progress]);
+
+  const left = progress.interpolate({
+    inputRange: [0, 1],
+    outputRange: ["-38%", "100%"],
+  });
+
+  return (
+    <View
+      testID="fanframe-loading-progress-bar"
+      style={{
+        width: "100%",
+        height,
+        backgroundColor: trackColor,
+        overflow: "hidden",
+        position: "relative",
+      }}
+    >
+      <Animated.View
+        style={{
+          position: "absolute",
+          top: 0,
+          bottom: 0,
+          width: "38%",
+          left,
+          backgroundColor: color,
+        }}
+      />
+    </View>
+  );
 }
 
 function formatByteSize(bytes: number): string {
@@ -354,6 +423,7 @@ function MediaSegmentCard({
   const [imageUri, setImageUri] = useState<string | null>(null);
   const [imageDims, setImageDims] = useState<{ w: number; h: number } | null>(null);
   const [loading, setLoading] = useState(true);
+  const [loadPhase, setLoadPhase] = useState<"inspecting" | "downloading">("inspecting");
   const [loadingBody, setLoadingBody] = useState(false);
   const [expanded, setExpanded] = useState(false);
   const [lightboxOpen, setLightboxOpen] = useState(false);
@@ -363,6 +433,7 @@ function MediaSegmentCard({
     let cancelled = false;
     let ownedBlobUrl: string | null = null;
     setLoading(true);
+    setLoadPhase("inspecting");
     setError(null);
     setMeta(null);
     setBytes(null);
@@ -387,6 +458,7 @@ function MediaSegmentCard({
         setMeta(nextMeta);
 
         if (nextMeta.kind === "image" || nextMeta.kind === "audio" || nextMeta.kind === "video") {
+          setLoadPhase("downloading");
           const data = await readMediaBytes({ path });
           if (cancelled) return;
           setBytes(data);
@@ -395,14 +467,16 @@ function MediaSegmentCard({
               ? createWebBlobUrl(data, nextMeta.mime)
               : encodeBytesToDataUri(data, nextMeta.mime);
             if (isWeb) ownedBlobUrl = uri;
+            const dims = await new Promise<{ w: number; h: number } | null>((resolve) => {
+              Image.getSize(
+                uri,
+                (w, h) => resolve(w > 0 && h > 0 ? { w, h } : null),
+                () => resolve(null),
+              );
+            });
+            if (cancelled) return;
+            if (dims) setImageDims(dims);
             setImageUri(uri);
-            Image.getSize(
-              uri,
-              (w, h) => {
-                if (!cancelled && w > 0 && h > 0) setImageDims({ w, h });
-              },
-              () => undefined,
-            );
           }
         }
         setLoading(false);
@@ -423,6 +497,7 @@ function MediaSegmentCard({
   const displayTitle = title?.trim() || meta?.name || path;
   const sizeLabel = meta && meta.size > 0 ? formatByteSize(meta.size) : "";
   const maxWidth = compact ? 340 : 640;
+  const pendingKind = meta?.kind ?? inferKindFromPath(path);
 
   const handleToggleDocument = async () => {
     const nextOpen = !expanded;
@@ -440,25 +515,234 @@ function MediaSegmentCard({
   };
 
   if (loading) {
+    const phaseLabel =
+      loadPhase === "downloading"
+        ? sizeLabel
+          ? `正在载入 · ${sizeLabel}`
+          : "正在载入资源..."
+        : "正在检查资源...";
+    const kindIcon =
+      pendingKind === "image"
+        ? "Image"
+        : pendingKind === "audio"
+          ? "Volume2"
+          : pendingKind === "video"
+            ? "Film"
+            : "File";
+
+    if (pendingKind === "audio") {
+      return (
+        <View
+          testID="fanframe-media-loading"
+          style={{
+            width: "100%",
+            maxWidth,
+            borderWidth: 1,
+            borderColor: c.border,
+            backgroundColor: c.surface1,
+          }}
+        >
+          <View
+            style={{
+              flexDirection: "row",
+              alignItems: "center",
+              justifyContent: "space-between",
+              gap: 10,
+              paddingHorizontal: 10,
+              paddingVertical: 6,
+              backgroundColor: c.surface2,
+              borderBottomWidth: 1,
+              borderBottomColor: c.border,
+            }}
+          >
+            <View style={{ flexDirection: "row", alignItems: "center", gap: 6, flexShrink: 1 }}>
+              <Icon name="Volume2" size={13} color={c.foregroundMuted} />
+              <Text
+                style={{ color: c.foreground, fontSize: 12, fontWeight: "600", flexShrink: 1 }}
+                numberOfLines={1}
+              >
+                {displayTitle}
+              </Text>
+            </View>
+            <Text style={{ color: c.foregroundMuted, fontSize: 11.5 }}>{sizeLabel || "载入中"}</Text>
+          </View>
+          <View
+            style={{
+              flexDirection: "row",
+              alignItems: "center",
+              gap: compact ? 8 : 10,
+              paddingHorizontal: compact ? 8 : 10,
+              paddingVertical: compact ? 7 : 8,
+              backgroundColor: c.surface0,
+            }}
+          >
+            <View
+              style={{
+                width: 28,
+                height: 28,
+                alignItems: "center",
+                justifyContent: "center",
+                borderWidth: 1,
+                borderColor: c.border,
+                backgroundColor: c.surface1,
+                opacity: 0.55,
+              }}
+            >
+              <Icon name="Play" size={13} color={c.foregroundMuted} />
+            </View>
+            <Text
+              style={{
+                color: c.foregroundMuted,
+                fontSize: 11.5,
+                fontVariant: ["tabular-nums"],
+                minWidth: compact ? 64 : 70,
+              }}
+            >
+              0:00 / --:--
+            </Text>
+            <View style={{ flex: 1, minWidth: 60, height: 24, justifyContent: "center" }}>
+              <FanframeProgressBar color={c.accent} trackColor={c.surface2} height={2} />
+            </View>
+          </View>
+        </View>
+      );
+    }
+
+    if (pendingKind === "image" || pendingKind === "video") {
+      const stageW = pendingKind === "image" ? (compact ? 320 : 420) : undefined;
+      const stageH = pendingKind === "video" ? 240 : 220;
+      return (
+        <View
+          testID="fanframe-media-loading"
+          style={{
+            alignSelf: pendingKind === "image" ? "flex-start" : "stretch",
+            width: pendingKind === "video" ? "100%" : stageW,
+            maxWidth,
+            borderWidth: 1,
+            borderColor: c.border,
+            backgroundColor: c.surface1,
+          }}
+        >
+          <View
+            style={{
+              flexDirection: "row",
+              alignItems: "center",
+              justifyContent: "space-between",
+              gap: 10,
+              paddingHorizontal: 10,
+              paddingVertical: 6,
+              backgroundColor: c.surface2,
+              borderBottomWidth: 1,
+              borderBottomColor: c.border,
+            }}
+          >
+            <View style={{ flexDirection: "row", alignItems: "center", gap: 6, flexShrink: 1 }}>
+              <Icon name={kindIcon} size={13} color={c.foregroundMuted} />
+              <Text
+                style={{ color: c.foreground, fontSize: 12, fontWeight: "600", flexShrink: 1 }}
+                numberOfLines={1}
+              >
+                {displayTitle}
+              </Text>
+            </View>
+            {sizeLabel ? (
+              <Text style={{ color: c.foregroundMuted, fontSize: 11.5 }}>{sizeLabel}</Text>
+            ) : null}
+          </View>
+          <FanframeProgressBar color={c.accent} trackColor={c.surface2} height={2} />
+          <View
+            style={{
+              height: stageH,
+              backgroundColor: c.surface0,
+              alignItems: "center",
+              justifyContent: "center",
+              gap: 8,
+              padding: 16,
+            }}
+          >
+            <Icon name={kindIcon} size={20} color={c.foregroundMuted} />
+            <Text style={{ color: c.foregroundMuted, fontSize: 12 }}>{phaseLabel}</Text>
+          </View>
+          {pendingKind === "video" ? (
+            <View
+              style={{
+                flexDirection: "row",
+                alignItems: "center",
+                gap: compact ? 8 : 10,
+                paddingHorizontal: compact ? 8 : 10,
+                paddingVertical: compact ? 7 : 8,
+                backgroundColor: c.surface0,
+                borderTopWidth: 1,
+                borderTopColor: c.border,
+              }}
+            >
+              <View
+                style={{
+                  width: 28,
+                  height: 28,
+                  alignItems: "center",
+                  justifyContent: "center",
+                  borderWidth: 1,
+                  borderColor: c.border,
+                  backgroundColor: c.surface1,
+                  opacity: 0.55,
+                }}
+              >
+                <Icon name="Play" size={13} color={c.foregroundMuted} />
+              </View>
+              <Text
+                style={{
+                  color: c.foregroundMuted,
+                  fontSize: 11.5,
+                  fontVariant: ["tabular-nums"],
+                  minWidth: compact ? 64 : 70,
+                }}
+              >
+                0:00 / --:--
+              </Text>
+              <View style={{ flex: 1, minWidth: 60, height: 24, justifyContent: "center" }}>
+                <FanframeProgressBar color={c.accent} trackColor={c.surface2} height={2} />
+              </View>
+            </View>
+          ) : null}
+        </View>
+      );
+    }
+
     return (
       <View
         testID="fanframe-media-loading"
         style={{
+          width: "100%",
           maxWidth,
           borderWidth: 1,
           borderColor: c.border,
           backgroundColor: c.surface1,
-          paddingHorizontal: 10,
-          paddingVertical: 8,
-          flexDirection: "row",
-          alignItems: "center",
-          gap: 8,
         }}
       >
-        <Icon name="File" size={14} color={c.foregroundMuted} />
-        <Text style={{ color: c.foregroundMuted, fontSize: 12.5 }} numberOfLines={1}>
-          正在加载 {displayTitle}...
-        </Text>
+        <View
+          style={{
+            paddingHorizontal: 10,
+            paddingVertical: 7,
+            backgroundColor: c.surface2,
+            flexDirection: "row",
+            alignItems: "center",
+            justifyContent: "space-between",
+            gap: 8,
+          }}
+        >
+          <View style={{ flexDirection: "row", alignItems: "center", gap: 6, flexShrink: 1 }}>
+            <Icon name={kindIcon} size={13} color={c.foregroundMuted} />
+            <Text
+              style={{ color: c.foreground, fontSize: 12, fontWeight: "600", flexShrink: 1 }}
+              numberOfLines={1}
+            >
+              {displayTitle}
+            </Text>
+          </View>
+          <Text style={{ color: c.foregroundMuted, fontSize: 11.5 }}>{phaseLabel}</Text>
+        </View>
+        <FanframeProgressBar color={c.accent} trackColor={c.surface2} height={2} />
       </View>
     );
   }
@@ -672,9 +956,12 @@ function MediaSegmentCard({
       {expanded ? (
         <View style={{ borderTopWidth: 1, borderTopColor: c.border }}>
           {loadingBody ? (
-            <Text style={{ color: c.foregroundMuted, fontSize: 12, padding: 10 }}>
-              正在读取文件内容...
-            </Text>
+            <View>
+              <FanframeProgressBar color={c.accent} trackColor={c.surface2} height={2} />
+              <Text style={{ color: c.foregroundMuted, fontSize: 12, padding: 10 }}>
+                正在读取文件内容...
+              </Text>
+            </View>
           ) : bytes ? (
             meta.kind === "pdf" && isWeb ? (
               <WebMediaElementSlot
@@ -748,7 +1035,45 @@ function InlineVizSegmentCard({
     });
   }, [card, cardId, c.accent, c.border, c.foreground, c.foregroundMuted, c.surface0]);
 
-  if (!card) return null;
+  if (!card) {
+    return (
+      <View
+        testID="fanframe-rich-viz-loading"
+        style={{
+          borderWidth: 1,
+          borderColor: c.border,
+          backgroundColor: c.surface1,
+          overflow: "hidden",
+        }}
+      >
+        <View
+          style={{
+            paddingHorizontal: 12,
+            paddingVertical: 7,
+            backgroundColor: c.surface2,
+            borderBottomWidth: 1,
+            borderBottomColor: c.border,
+          }}
+        >
+          <Text style={{ color: c.foregroundMuted, fontSize: 12.5, fontWeight: "600" }}>
+            正在载入可视化卡片...
+          </Text>
+        </View>
+        <FanframeProgressBar color={c.accent} trackColor={c.surface2} height={2} />
+        <View
+          style={{
+            width: "100%",
+            height: 180,
+            backgroundColor: c.surface0,
+            alignItems: "center",
+            justifyContent: "center",
+          }}
+        >
+          <Text style={{ color: c.foregroundMuted, fontSize: 12 }}>载入中...</Text>
+        </View>
+      </View>
+    );
+  }
 
   return (
     <View
