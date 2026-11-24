@@ -2378,6 +2378,223 @@ export function decodeUtf8Bytes(bytes: Uint8Array, maxChars = 65536): string {
   return out;
 }
 
+export interface WebMediaPlayerState {
+  playing: boolean;
+  currentTime: number;
+  duration: number;
+  muted: boolean;
+  ready: boolean;
+  ended: boolean;
+}
+
+export interface WebMediaPlayerHandle {
+  togglePlay(): void;
+  seek(seconds: number): void;
+  toggleMute(): void;
+  download(): void;
+  toggleFullscreen(): void;
+  destroy(): void;
+}
+
+interface DomMediaElement extends DomElement {
+  src: string;
+  currentTime: number;
+  readonly duration: number;
+  readonly paused: boolean;
+  readonly ended: boolean;
+  muted: boolean;
+  play(): Promise<void> | void;
+  pause(): void;
+  requestFullscreen?: () => Promise<void> | void;
+  addEventListener(type: string, listener: () => void): void;
+  removeEventListener(type: string, listener: () => void): void;
+}
+
+interface DomPointerTarget extends DomElement {
+  setPointerCapture?(pointerId: number): void;
+  releasePointerCapture?(pointerId: number): void;
+  addEventListener(type: string, listener: (ev: unknown) => void): void;
+  removeEventListener(type: string, listener: (ev: unknown) => void): void;
+}
+
+interface DomAnchorElement extends DomElement {
+  href: string;
+  download: string;
+  click(): void;
+}
+
+export function createWebMediaPlayer(
+  host: unknown,
+  options: {
+    kind: "audio" | "video";
+    bytes: Uint8Array;
+    mime: string;
+    filename: string;
+    onState: (state: WebMediaPlayerState) => void;
+  },
+): WebMediaPlayerHandle | null {
+  if (Platform.OS !== "web") return null;
+  const container = host as DomElement | null;
+  if (!container || typeof container.appendChild !== "function") return null;
+
+  const blobUrl = URL.createObjectURL(new Blob([options.bytes], { type: options.mime }));
+  const media = document.createElement(options.kind) as unknown as DomMediaElement;
+  media.setAttribute("preload", "metadata");
+  if (options.kind === "video") {
+    media.setAttribute("playsinline", "");
+    media.style.setProperty("display", "block");
+    media.style.setProperty("width", "100%");
+    media.style.setProperty("max-height", "360px");
+    media.style.setProperty("height", "auto");
+    media.style.setProperty("background", "#000");
+    media.style.setProperty("cursor", "pointer");
+  } else {
+    media.style.setProperty("display", "none");
+  }
+  media.src = blobUrl;
+
+  const emit = () => {
+    const dur = Number.isFinite(media.duration) && media.duration > 0 ? media.duration : 0;
+    const cur = Number.isFinite(media.currentTime) && media.currentTime >= 0 ? media.currentTime : 0;
+    options.onState({
+      playing: !media.paused && !media.ended,
+      currentTime: dur > 0 ? Math.min(cur, dur) : cur,
+      duration: dur,
+      muted: Boolean(media.muted),
+      ready: dur > 0,
+      ended: Boolean(media.ended),
+    });
+  };
+
+  const togglePlay = () => {
+    if (media.paused || media.ended) {
+      if (media.ended) media.currentTime = 0;
+      const p = media.play();
+      if (p && typeof (p as Promise<void>).catch === "function") {
+        void (p as Promise<void>).catch(() => undefined);
+      }
+    } else {
+      media.pause();
+    }
+    emit();
+  };
+
+  const onVideoClick = () => {
+    if (options.kind === "video") togglePlay();
+  };
+
+  const events = ["loadedmetadata", "durationchange", "timeupdate", "play", "pause", "ended", "volumechange"];
+  for (const ev of events) media.addEventListener(ev, emit);
+  if (options.kind === "video") media.addEventListener("click", onVideoClick);
+
+  container.appendChild(media);
+  emit();
+
+  return {
+    togglePlay,
+    seek(seconds: number) {
+      const dur = Number.isFinite(media.duration) && media.duration > 0 ? media.duration : 0;
+      if (dur <= 0) return;
+      media.currentTime = Math.max(0, Math.min(dur, seconds));
+      emit();
+    },
+    toggleMute() {
+      media.muted = !media.muted;
+      emit();
+    },
+    download() {
+      const a = document.createElement("a") as unknown as DomAnchorElement;
+      a.href = blobUrl;
+      a.download = options.filename || (options.kind === "audio" ? "audio" : "video");
+      a.style.setProperty("display", "none");
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+    },
+    toggleFullscreen() {
+      if (options.kind === "video") {
+        const res = media.requestFullscreen?.();
+        if (res && typeof (res as Promise<void>).catch === "function") {
+          void (res as Promise<void>).catch(() => undefined);
+        }
+      }
+    },
+    destroy() {
+      media.pause();
+      for (const ev of events) media.removeEventListener(ev, emit);
+      if (options.kind === "video") media.removeEventListener("click", onVideoClick);
+      media.remove();
+      revokeWebPreviewUrl(blobUrl);
+    },
+  };
+}
+
+export function bindWebScrubber(
+  host: unknown,
+  onRatio: (ratio: number) => void,
+): () => void {
+  if (Platform.OS !== "web") return () => {};
+  const el = host as DomPointerTarget | null;
+  if (!el || typeof el.addEventListener !== "function") return () => {};
+
+  el.style.setProperty("touch-action", "none");
+  el.style.setProperty("cursor", "pointer");
+
+  let dragging = false;
+  let activePointerId: number | null = null;
+
+  const computeRatio = (rawEvent: unknown): number => {
+    const clientX = (rawEvent as { clientX?: number })?.clientX ?? 0;
+    const rect = el.getBoundingClientRect();
+    if (rect.width <= 0) return 0;
+    return Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
+  };
+
+  const onPointerDown = (rawEvent: unknown) => {
+    dragging = true;
+    const pid = (rawEvent as { pointerId?: number })?.pointerId;
+    if (typeof pid === "number") {
+      activePointerId = pid;
+      try {
+        el.setPointerCapture?.(pid);
+      } catch {
+        // Ignore capture failure on synthetic events.
+      }
+    }
+    onRatio(computeRatio(rawEvent));
+  };
+
+  const onPointerMove = (rawEvent: unknown) => {
+    if (!dragging) return;
+    onRatio(computeRatio(rawEvent));
+  };
+
+  const onPointerEnd = () => {
+    if (!dragging) return;
+    dragging = false;
+    if (activePointerId !== null) {
+      try {
+        el.releasePointerCapture?.(activePointerId);
+      } catch {
+        // Ignore release errors.
+      }
+      activePointerId = null;
+    }
+  };
+
+  el.addEventListener("pointerdown", onPointerDown);
+  el.addEventListener("pointermove", onPointerMove);
+  el.addEventListener("pointerup", onPointerEnd);
+  el.addEventListener("pointercancel", onPointerEnd);
+
+  return () => {
+    el.removeEventListener("pointerdown", onPointerDown);
+    el.removeEventListener("pointermove", onPointerMove);
+    el.removeEventListener("pointerup", onPointerEnd);
+    el.removeEventListener("pointercancel", onPointerEnd);
+  };
+}
+
 export function mountWebMediaElement(
   host: unknown,
   options: {

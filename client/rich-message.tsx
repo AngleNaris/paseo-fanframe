@@ -16,13 +16,25 @@ import {
 } from "../shared/rich-message";
 import { getVisualizeCardRpc } from "../shared/visualize";
 import {
+  type WebMediaPlayerHandle,
+  type WebMediaPlayerState,
+  bindWebScrubber,
   createWebBlobUrl,
+  createWebMediaPlayer,
   decodeUtf8Bytes,
   encodeBytesToDataUri,
   mountVisualizeCard,
   mountWebMediaElement,
   revokeWebPreviewUrl,
 } from "./web";
+
+function formatMediaTime(seconds: number): string {
+  if (!Number.isFinite(seconds) || seconds < 0) return "0:00";
+  const total = Math.floor(seconds);
+  const mins = Math.floor(total / 60);
+  const secs = total % 60;
+  return `${mins}:${secs < 10 ? "0" : ""}${secs}`;
+}
 
 function formatByteSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
@@ -45,6 +57,247 @@ interface MediaMeta {
   mime: string;
   name: string;
   size: number;
+}
+
+function FanframeMediaPlayer({
+  kind,
+  bytes,
+  mime,
+  filename,
+  theme,
+  compact,
+}: {
+  kind: "audio" | "video";
+  bytes: Uint8Array;
+  mime: string;
+  filename: string;
+  theme: PluginTimelineItemProps["theme"];
+  compact: boolean;
+}) {
+  const c = theme.colors;
+  const mediaHostRef = useRef<unknown>(null);
+  const scrubRef = useRef<unknown>(null);
+  const playerRef = useRef<WebMediaPlayerHandle | null>(null);
+  const durationRef = useRef(0);
+
+  const [state, setState] = useState<WebMediaPlayerState>({
+    playing: false,
+    currentTime: 0,
+    duration: 0,
+    muted: false,
+    ready: false,
+    ended: false,
+  });
+  const [hoveredBtn, setHoveredBtn] = useState<string | null>(null);
+  const [scrubHovered, setScrubHovered] = useState(false);
+
+  durationRef.current = state.duration;
+
+  useEffect(() => {
+    if (Platform.OS !== "web" || !mediaHostRef.current) return;
+    const handle = createWebMediaPlayer(mediaHostRef.current, {
+      kind,
+      bytes,
+      mime,
+      filename,
+      onState: setState,
+    });
+    playerRef.current = handle;
+    return () => {
+      playerRef.current = null;
+      handle?.destroy();
+    };
+  }, [kind, bytes, mime, filename]);
+
+  useEffect(() => {
+    if (Platform.OS !== "web" || !scrubRef.current) return;
+    return bindWebScrubber(scrubRef.current, (ratio) => {
+      const dur = durationRef.current;
+      if (dur > 0) {
+        playerRef.current?.seek(ratio * dur);
+      }
+    });
+  }, []);
+
+  const progress = state.duration > 0 ? Math.max(0, Math.min(1, state.currentTime / state.duration)) : 0;
+  const pct = `${(progress * 100).toFixed(2)}%` as `${number}%`;
+
+  return (
+    <View testID={`fanframe-custom-${kind}-player`}>
+      {/* Video frame (or hidden audio host) */}
+      <View
+        ref={mediaHostRef as never}
+        style={
+          kind === "video"
+            ? { width: "100%", backgroundColor: "#000", overflow: "hidden" }
+            : { height: 0, width: 0, overflow: "hidden" }
+        }
+      />
+
+      {/* FanFrame sharp minimal transport bar */}
+      <View
+        style={{
+          flexDirection: "row",
+          alignItems: "center",
+          gap: compact ? 8 : 10,
+          paddingHorizontal: compact ? 8 : 10,
+          paddingVertical: compact ? 7 : 8,
+          backgroundColor: c.surface0,
+          ...(kind === "video" ? { borderTopWidth: 1, borderTopColor: c.border } : {}),
+        }}
+      >
+        {/* Play / Pause */}
+        <Pressable
+          testID="fanframe-player-play"
+          accessibilityRole="button"
+          accessibilityLabel={state.playing ? "暂停" : "播放"}
+          onPress={() => playerRef.current?.togglePlay()}
+          onHoverIn={() => setHoveredBtn("play")}
+          onHoverOut={() => setHoveredBtn(null)}
+          style={{
+            width: 28,
+            height: 28,
+            alignItems: "center",
+            justifyContent: "center",
+            borderWidth: 1,
+            borderColor: state.playing || hoveredBtn === "play" ? c.accent : c.border,
+            backgroundColor: state.playing ? c.accent : hoveredBtn === "play" ? c.surface2 : c.surface1,
+          }}
+        >
+          <Icon
+            name={state.playing ? "Pause" : "Play"}
+            size={13}
+            color={state.playing ? c.accentForeground : c.foreground}
+          />
+        </Pressable>
+
+        {/* Time readout */}
+        <Text
+          style={{
+            color: c.foregroundMuted,
+            fontSize: 11.5,
+            fontVariant: ["tabular-nums"],
+            minWidth: compact ? 64 : 70,
+          }}
+        >
+          {formatMediaTime(state.currentTime)} / {formatMediaTime(state.duration)}
+        </Text>
+
+        {/* Scrubber track */}
+        <Pressable
+          ref={scrubRef as never}
+          testID="fanframe-player-scrubber"
+          accessibilityRole="adjustable"
+          accessibilityLabel="播放进度"
+          onHoverIn={() => setScrubHovered(true)}
+          onHoverOut={() => setScrubHovered(false)}
+          style={{
+            flex: 1,
+            minWidth: 60,
+            height: 24,
+            justifyContent: "center",
+          }}
+        >
+          <View
+            style={{
+              width: "100%",
+              height: scrubHovered ? 3 : 2,
+              backgroundColor: c.surface2,
+              position: "relative",
+              justifyContent: "center",
+            }}
+          >
+            <View
+              style={{
+                width: pct,
+                height: "100%",
+                backgroundColor: c.accent,
+              }}
+            />
+            <View
+              style={{
+                position: "absolute",
+                left: pct,
+                width: scrubHovered || state.playing ? 8 : 6,
+                height: scrubHovered || state.playing ? 8 : 6,
+                marginLeft: scrubHovered || state.playing ? -4 : -3,
+                backgroundColor: scrubHovered ? c.foreground : c.accent,
+              }}
+            />
+          </View>
+        </Pressable>
+
+        {/* Mute toggle */}
+        <Pressable
+          testID="fanframe-player-mute"
+          accessibilityRole="button"
+          accessibilityLabel={state.muted ? "取消静音" : "静音"}
+          onPress={() => playerRef.current?.toggleMute()}
+          onHoverIn={() => setHoveredBtn("mute")}
+          onHoverOut={() => setHoveredBtn(null)}
+          style={{
+            width: 26,
+            height: 26,
+            alignItems: "center",
+            justifyContent: "center",
+            borderWidth: 1,
+            borderColor: hoveredBtn === "mute" ? c.accent : "transparent",
+            backgroundColor: hoveredBtn === "mute" ? c.surface2 : "transparent",
+          }}
+        >
+          <Icon
+            name={state.muted ? "VolumeX" : "Volume2"}
+            size={13}
+            color={state.muted ? c.foregroundMuted : c.foreground}
+          />
+        </Pressable>
+
+        {/* Fullscreen (video only) */}
+        {kind === "video" ? (
+          <Pressable
+            testID="fanframe-player-fullscreen"
+            accessibilityRole="button"
+            accessibilityLabel="全屏播放"
+            onPress={() => playerRef.current?.toggleFullscreen()}
+            onHoverIn={() => setHoveredBtn("fs")}
+            onHoverOut={() => setHoveredBtn(null)}
+            style={{
+              width: 26,
+              height: 26,
+              alignItems: "center",
+              justifyContent: "center",
+              borderWidth: 1,
+              borderColor: hoveredBtn === "fs" ? c.accent : "transparent",
+              backgroundColor: hoveredBtn === "fs" ? c.surface2 : "transparent",
+            }}
+          >
+            <Icon name="Maximize2" size={13} color={c.foregroundMuted} />
+          </Pressable>
+        ) : null}
+
+        {/* Download */}
+        <Pressable
+          testID="fanframe-player-download"
+          accessibilityRole="button"
+          accessibilityLabel="下载文件"
+          onPress={() => playerRef.current?.download()}
+          onHoverIn={() => setHoveredBtn("dl")}
+          onHoverOut={() => setHoveredBtn(null)}
+          style={{
+            width: 26,
+            height: 26,
+            alignItems: "center",
+            justifyContent: "center",
+            borderWidth: 1,
+            borderColor: hoveredBtn === "dl" ? c.accent : "transparent",
+            backgroundColor: hoveredBtn === "dl" ? c.surface2 : "transparent",
+          }}
+        >
+          <Icon name="Download" size={13} color={c.foregroundMuted} />
+        </Pressable>
+      </View>
+    </View>
+  );
 }
 
 function WebMediaElementSlot({
@@ -354,11 +607,13 @@ function MediaSegmentCard({
           ) : null}
         </View>
         {isWeb ? (
-          <WebMediaElementSlot
+          <FanframeMediaPlayer
             kind={meta.kind}
             bytes={bytes}
             mime={meta.mime}
-            title={displayTitle}
+            filename={meta.name}
+            theme={theme}
+            compact={compact}
           />
         ) : (
           <View style={{ padding: 10 }}>
