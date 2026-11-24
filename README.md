@@ -5,6 +5,7 @@
   <p>为 <a href="https://paseo.sh">Paseo</a> 打造的低饱和深浅双色直角主题，兼顾长文阅读层次、紧凑侧栏、AI 提问点选卡片与跨主机媒体播放。</p>
 
   <p>
+    <a href="#preview--效果预览">Preview</a> ·
     <a href="#install--安装">Install</a> ·
     <a href="#features--功能特性">Features</a> ·
     <a href="#configuration--配置开关">Configuration</a> ·
@@ -12,6 +13,18 @@
     <a href="#data--privacy--数据与权限边界">Privacy</a>
   </p>
 </div>
+
+---
+
+## Preview · 效果预览
+
+<p align="center">
+  <img src="./assets/preview-workspace.png" alt="FanFrame Dark workspace, 3-column sidebar grid, project-colored titles, and low-saturation Markdown layering" width="100%" />
+</p>
+
+<p align="center">
+  <img src="./assets/preview-themes.png" alt="FanFrame Dark and FanFrame Light in Paseo Settings -> Appearance" width="76%" />
+</p>
 
 ---
 

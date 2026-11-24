@@ -9,7 +9,10 @@
     }
   },
   "icon": "assets/icon.png",
-  "media": [],
+  "media": [
+    "assets/preview-workspace.png",
+    "assets/preview-themes.png"
+  ],
   "requirements": {
     "paseo": ">=0.16.0"
   }
