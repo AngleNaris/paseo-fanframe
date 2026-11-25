@@ -2,11 +2,17 @@ import {
   type PluginClientContext,
   type PluginTimelineItemProps,
   useRpc,
+  useSettings,
 } from "@getpaseo/plugin/client";
-import { Icon, Markdown, Modal, ScrollView } from "@getpaseo/plugin/client/ui";
+import { Icon, Markdown, Modal, ScrollView, useToast } from "@getpaseo/plugin/client/ui";
 import { useEffect, useRef, useState } from "react";
 import { Animated, Easing, Image, Platform, Pressable, Text, View } from "react-native";
-import { inspectMediaRpc, readMediaBytesRpc, type MediaKind } from "../shared/media";
+import {
+  inspectMediaRpc,
+  mediaAccessSettings,
+  readMediaBytesRpc,
+  type MediaKind,
+} from "../shared/media";
 import {
   RICH_MESSAGE_TIMELINE_KIND,
   RICH_MESSAGE_TIMELINE_VERSION,
@@ -401,12 +407,32 @@ function WebMediaElementSlot({
   );
 }
 
+function extractParentDirectory(rawPath: string): string | null {
+  let clean = rawPath.trim();
+  if (/^file:\/\//i.test(clean)) {
+    try {
+      clean = decodeURIComponent(clean.replace(/^file:\/\//i, ""));
+      if (/^\/[a-zA-Z]:/.test(clean)) clean = clean.slice(1);
+    } catch {
+      // Keep raw fallback.
+    }
+  }
+  const normalized = clean.replace(/[\\/]+$/, "");
+  const lastSlash = Math.max(normalized.lastIndexOf("/"), normalized.lastIndexOf("\\"));
+  if (lastSlash <= 0) return null;
+  const dir = normalized.slice(0, lastSlash);
+  if (/^[a-zA-Z]:$/.test(dir)) return `${dir}/`;
+  return dir || null;
+}
+
 function MediaSegmentCard({
+  agentId,
   path,
   title,
   theme,
   layout,
 }: {
+  agentId: string;
   path: string;
   title?: string;
   theme: PluginTimelineItemProps["theme"];
@@ -415,8 +441,10 @@ function MediaSegmentCard({
   const c = theme.colors;
   const compact = layout.compact;
   const isWeb = Platform.OS === "web";
+  const toast = useToast();
   const inspectMedia = useRpc(inspectMediaRpc);
   const readMediaBytes = useRpc(readMediaBytesRpc);
+  const mediaSettings = useSettings(mediaAccessSettings);
 
   const [meta, setMeta] = useState<MediaMeta | null>(null);
   const [bytes, setBytes] = useState<Uint8Array | null>(null);
@@ -427,6 +455,9 @@ function MediaSegmentCard({
   const [loadingBody, setLoadingBody] = useState(false);
   const [expanded, setExpanded] = useState(false);
   const [lightboxOpen, setLightboxOpen] = useState(false);
+  const [blocked, setBlocked] = useState(false);
+  const [approvingDir, setApprovingDir] = useState(false);
+  const [reloadTick, setReloadTick] = useState(0);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -435,6 +466,7 @@ function MediaSegmentCard({
     setLoading(true);
     setLoadPhase("inspecting");
     setError(null);
+    setBlocked(false);
     setMeta(null);
     setBytes(null);
     setImageUri(null);
@@ -442,9 +474,10 @@ function MediaSegmentCard({
 
     void (async () => {
       try {
-        const res = await inspectMedia({ path });
+        const res = await inspectMedia({ agentId, path });
         if (cancelled) return;
         if (!res.ok || !res.kind || !res.mime) {
+          setBlocked(Boolean(res.blocked));
           setError(res.error ?? "无法读取媒体文件");
           setLoading(false);
           return;
@@ -459,7 +492,7 @@ function MediaSegmentCard({
 
         if (nextMeta.kind === "image" || nextMeta.kind === "audio" || nextMeta.kind === "video") {
           setLoadPhase("downloading");
-          const data = await readMediaBytes({ path });
+          const data = await readMediaBytes({ agentId, path });
           if (cancelled) return;
           setBytes(data);
           if (nextMeta.kind === "image") {
@@ -492,12 +525,33 @@ function MediaSegmentCard({
       cancelled = true;
       if (ownedBlobUrl) revokeWebPreviewUrl(ownedBlobUrl);
     };
-  }, [path, inspectMedia, readMediaBytes, isWeb]);
+  }, [agentId, path, inspectMedia, readMediaBytes, isWeb, reloadTick]);
 
   const displayTitle = title?.trim() || meta?.name || path;
   const sizeLabel = meta && meta.size > 0 ? formatByteSize(meta.size) : "";
   const maxWidth = compact ? 340 : 640;
   const pendingKind = meta?.kind ?? inferKindFromPath(path);
+  const parentDir = extractParentDirectory(path);
+
+  const handleApproveParentDir = async () => {
+    if (!parentDir || approvingDir || mediaSettings.status !== "ready") return;
+    setApprovingDir(true);
+    try {
+      const existing = mediaSettings.values.extraAllowedDirs;
+      const alreadyPresent = existing.some(
+        (entry) => entry.trim().toLowerCase() === parentDir.toLowerCase(),
+      );
+      const nextDirs = alreadyPresent ? existing : [...existing, parentDir];
+      const saved = await mediaSettings.save({ extraAllowedDirs: nextDirs }, mediaSettings.revision);
+      if (saved) {
+        setReloadTick((n) => n + 1);
+      } else {
+        toast.error(mediaSettings.saveError ?? "保存允许目录失败，请重试。");
+      }
+    } finally {
+      setApprovingDir(false);
+    }
+  };
 
   const handleToggleDocument = async () => {
     const nextOpen = !expanded;
@@ -505,7 +559,7 @@ function MediaSegmentCard({
     if (!nextOpen || bytes || loadingBody) return;
     setLoadingBody(true);
     try {
-      const data = await readMediaBytes({ path });
+      const data = await readMediaBytes({ agentId, path });
       setBytes(data);
     } catch (err) {
       setError(err instanceof Error ? err.message : "读取文件内容失败");
@@ -748,6 +802,67 @@ function MediaSegmentCard({
   }
 
   if (error || !meta) {
+    if (blocked) {
+      return (
+        <View
+          testID="fanframe-media-blocked"
+          style={{
+            width: "100%",
+            maxWidth,
+            borderWidth: 1,
+            borderColor: c.border,
+            backgroundColor: c.surface1,
+            paddingHorizontal: 12,
+            paddingVertical: 10,
+            gap: 6,
+          }}
+        >
+          <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+            <Icon name="ShieldAlert" size={14} color={c.accent} />
+            <Text style={{ color: c.foreground, fontSize: 12.5, fontWeight: "600", flexShrink: 1 }} numberOfLines={1}>
+              {displayTitle}
+            </Text>
+          </View>
+          <Text style={{ color: c.foregroundMuted, fontSize: 12, lineHeight: 17 }}>
+            该文件位于当前工作区外，出于安全限制已阻止自动预览。
+          </Text>
+          {parentDir ? (
+            <Text style={{ color: c.foregroundMuted, fontSize: 11.5 }} numberOfLines={2}>
+              所在目录：{parentDir}
+            </Text>
+          ) : null}
+          <View style={{ flexDirection: "row", alignItems: "center", gap: 8, paddingTop: 2, flexWrap: "wrap" }}>
+            {parentDir && mediaSettings.status === "ready" ? (
+              <Pressable
+                testID="fanframe-media-approve-dir"
+                accessibilityRole="button"
+                accessibilityLabel={`允许目录 ${parentDir} 并预览`}
+                disabled={approvingDir || mediaSettings.saving}
+                onPress={() => {
+                  void handleApproveParentDir();
+                }}
+                style={{
+                  paddingHorizontal: 10,
+                  paddingVertical: 5,
+                  borderWidth: 1,
+                  borderColor: c.accent,
+                  backgroundColor: c.surface0,
+                  opacity: approvingDir ? 0.6 : 1,
+                }}
+              >
+                <Text style={{ color: c.foreground, fontSize: 12, fontWeight: "500" }}>
+                  {approvingDir ? "正在授权..." : "允许该目录并预览"}
+                </Text>
+              </Pressable>
+            ) : null}
+            <Text style={{ color: c.foregroundMuted, fontSize: 11.5 }}>
+              可随时在「设置 → 插件 → FanFrame」中管理允许目录
+            </Text>
+          </View>
+        </View>
+      );
+    }
+
     return (
       <View
         testID="fanframe-media-error"
@@ -1104,6 +1219,7 @@ function InlineVizSegmentCard({
 }
 
 function FanframeRichMessageCard({
+  agentId,
   item,
   theme,
   layout,
@@ -1118,6 +1234,7 @@ function FanframeRichMessageCard({
           return (
             <MediaSegmentCard
               key={`media-${idx}-${seg.path}`}
+              agentId={agentId}
               path={seg.path}
               title={seg.title}
               theme={theme}

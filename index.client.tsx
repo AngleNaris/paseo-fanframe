@@ -6,9 +6,7 @@ import { FanframeSettings } from "./client/settings";
 import { FANFRAME_DARK_THEME, FANFRAME_LIGHT_THEME } from "./client/themes";
 import { FanframeVisualizeCard } from "./client/visualize";
 import { installFanframeWeb } from "./client/web";
-import { inspectMediaRpc, readMediaBytesRpc } from "./shared/media";
 import {
-  getVisualizeCardRpc,
   VISUALIZE_TIMELINE_KIND,
   VISUALIZE_TIMELINE_VERSION,
   visualizeTimelineDataSchema,
@@ -29,11 +27,7 @@ export default function contribute(client: PluginClientContext) {
     schema: visualizeTimelineDataSchema,
     Component: FanframeVisualizeCard,
   });
-  const cleanupWeb = installFanframeWeb({
-    fetchVisualizeCard: (cardId) => client.rpc(getVisualizeCardRpc, { cardId }),
-    inspectMedia: (path) => client.rpc(inspectMediaRpc, { path }),
-    readMediaBytes: (path) => client.rpc(readMediaBytesRpc, { path }),
-  });
+  const cleanupWeb = installFanframeWeb();
 
   const cleanupCrossImage = contributeCrossImage(client);
   const cleanupAskQuestion = contributeAskQuestion(client);

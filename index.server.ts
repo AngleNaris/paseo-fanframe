@@ -1,28 +1,41 @@
 import { defineAgentTool, type PluginServerContext } from "@getpaseo/plugin/server";
 import { z } from "zod";
 import { registerCrossImageHandlers } from "./server/cross-image";
-import { inspectMediaRpc, readMediaBytesRpc, type MediaKind } from "./shared/media";
+import {
+  inspectMediaRpc,
+  mediaAccessSettings,
+  readMediaBytesRpc,
+  type MediaKind,
+} from "./shared/media";
 import {
   getVisualizeCardRpc,
   VISUALIZE_TIMELINE_KIND,
   VISUALIZE_TIMELINE_VERSION,
 } from "./shared/visualize";
 
-// Minimal Node fs/path bridge via dynamic import so tsconfig stays DOM/Node-free.
+// Minimal Node fs/path/process bridge via dynamic import so tsconfig stays DOM/Node-free.
 type FsModule = {
   stat(path: string): Promise<{ isFile(): boolean; size: number }>;
+  realpath(path: string): Promise<string>;
   readFile(path: string): Promise<Uint8Array>;
 };
 type PathModule = {
   extname(p: string): string;
   basename(p: string): string;
   isAbsolute(p: string): boolean;
+  relative(from: string, to: string): string;
+};
+type ProcessModule = {
+  platform: string;
 };
 
 let fsPromise: Promise<FsModule> | null = null;
 let pathPromise: Promise<PathModule> | null = null;
+let processPromise: Promise<ProcessModule> | null = null;
 const loadFs = (): Promise<FsModule> => (fsPromise ??= import("node:fs/promises" as string) as Promise<FsModule>);
 const loadPath = (): Promise<PathModule> => (pathPromise ??= import("node:path" as string) as Promise<PathModule>);
+const loadProcess = (): Promise<ProcessModule> =>
+  (processPromise ??= import("node:process" as string) as Promise<ProcessModule>);
 
 const MEDIA_EXT_MAP: Record<string, { kind: MediaKind; mime: string; maxBytes: number }> = {
   ".mp4": { kind: "video", mime: "video/mp4", maxBytes: 128 * 1024 * 1024 },
@@ -212,14 +225,42 @@ export default function contribute(server: PluginServerContext) {
   });
 
   const cleanupCrossImage = registerCrossImageHandlers(server);
+  const mediaSettings = server.registerSettings(mediaAccessSettings);
 
-  server.handle(getVisualizeCardRpc, async ({ cardId }) => {
-    return cardCache.get(cardId) ?? null;
-  });
+  const isWithinCanonicalRoot = (
+    pathMod: PathModule,
+    resolvedFile: string,
+    resolvedRoot: string,
+    caseInsensitive: boolean,
+  ): boolean => {
+    const fileCmp = caseInsensitive ? resolvedFile.toLowerCase() : resolvedFile;
+    const rootCmp = caseInsensitive ? resolvedRoot.toLowerCase() : resolvedRoot;
+    const rel = pathMod.relative(rootCmp, fileCmp);
+    if (!rel) return false;
+    return rel !== ".." && !rel.startsWith("..\\") && !rel.startsWith("../") && !pathMod.isAbsolute(rel);
+  };
 
-  server.handle(inspectMediaRpc, async ({ path: rawPath }) => {
+  type AuthorizedMediaResult =
+    | {
+        ok: true;
+        resolvedPath: string;
+        spec: { kind: MediaKind; mime: string; maxBytes: number };
+        name: string;
+        size: number;
+      }
+    | {
+        ok: false;
+        blocked?: boolean;
+        error: string;
+      };
+
+  const resolveAuthorizedMediaFile = async (
+    agentId: string,
+    rawPath: string,
+    paseo: Parameters<Parameters<PluginServerContext["handle"]>[1]>[1]["paseo"],
+  ): Promise<AuthorizedMediaResult> => {
     const filePath = normalizeLocalFilePath(rawPath);
-    const pathMod = await loadPath();
+    const [fsMod, pathMod, procMod] = await Promise.all([loadFs(), loadPath(), loadProcess()]);
     if (!pathMod.isAbsolute(filePath)) {
       return { ok: false, error: "Path must be absolute." };
     }
@@ -228,42 +269,141 @@ export default function contribute(server: PluginServerContext) {
     if (!spec) {
       return { ok: false, error: `Unsupported media extension: ${ext || "(none)"}` };
     }
+
+    // Resolve the active conversation's workspace root from the daemon.
+    const agentRef = paseo.agents.ref(agentId);
+    let workspaceCwd = agentRef.cwd;
+    if (!workspaceCwd) {
+      try {
+        const refreshed = await agentRef.refresh();
+        workspaceCwd = refreshed?.agent.cwd ?? agentRef.cwd;
+      } catch {
+        workspaceCwd = agentRef.cwd;
+      }
+    }
+    if (!workspaceCwd) {
+      return {
+        ok: false,
+        blocked: true,
+        error: "Unable to verify the active workspace directory for this agent.",
+      };
+    }
+
+    // Collect canonical allowed roots: active workspace + user-configured host directories.
+    const candidateRoots: string[] = [workspaceCwd];
     try {
-      const fsMod = await loadFs();
-      const stat = await fsMod.stat(filePath);
+      const settingsState = await mediaSettings.read();
+      if (settingsState.status === "ready") {
+        for (const dir of settingsState.values.extraAllowedDirs) {
+          const normalized = normalizeLocalFilePath(dir);
+          if (normalized && pathMod.isAbsolute(normalized)) {
+            candidateRoots.push(normalized);
+          }
+        }
+      }
+    } catch {
+      // Fall back to workspace-only containment if settings cannot be read.
+    }
+
+    const canonicalRoots: string[] = [];
+    for (const root of candidateRoots) {
+      try {
+        canonicalRoots.push(await fsMod.realpath(root));
+      } catch {
+        // Ignore missing or inaccessible root entries.
+      }
+    }
+    if (canonicalRoots.length === 0) {
+      return {
+        ok: false,
+        blocked: true,
+        error: "No accessible workspace root could be resolved.",
+      };
+    }
+
+    // Resolve symlinks and relative segments on the target file before checking containment.
+    const caseInsensitive = procMod.platform === "win32";
+    let resolvedFile: string;
+    try {
+      resolvedFile = await fsMod.realpath(filePath);
+    } catch {
+      // Avoid revealing whether files outside allowed roots exist.
+      const lexicallyAllowed = candidateRoots.some((root) =>
+        isWithinCanonicalRoot(pathMod, filePath, root, caseInsensitive),
+      );
+      if (!lexicallyAllowed) {
+        return {
+          ok: false,
+          blocked: true,
+          error:
+            "File is outside the active workspace. Add its directory in Settings -> Plugins -> FanFrame to allow preview.",
+        };
+      }
+      return { ok: false, error: "File not found or unreadable." };
+    }
+
+    const allowed = canonicalRoots.some((root) =>
+      isWithinCanonicalRoot(pathMod, resolvedFile, root, caseInsensitive),
+    );
+    if (!allowed) {
+      return {
+        ok: false,
+        blocked: true,
+        error:
+          "File is outside the active workspace. Add its directory in Settings -> Plugins -> FanFrame to allow preview.",
+      };
+    }
+
+    try {
+      const stat = await fsMod.stat(resolvedFile);
       if (!stat.isFile()) return { ok: false, error: "Not a regular file." };
       if (stat.size > spec.maxBytes) {
-        return { ok: false, error: `File exceeds preview limit (${Math.round(spec.maxBytes / 1024 / 1024)} MiB).` };
+        return {
+          ok: false,
+          error: `File exceeds preview limit (${Math.round(spec.maxBytes / 1024 / 1024)} MiB).`,
+        };
       }
       return {
         ok: true,
-        kind: spec.kind,
-        mime: spec.mime,
-        name: pathMod.basename(filePath),
+        resolvedPath: resolvedFile,
+        spec,
+        name: pathMod.basename(resolvedFile),
         size: stat.size,
       };
     } catch {
       return { ok: false, error: "File not found or unreadable." };
     }
+  };
+
+  server.handle(getVisualizeCardRpc, async ({ cardId }) => {
+    return cardCache.get(cardId) ?? null;
   });
 
-  server.handle(readMediaBytesRpc, async ({ path: rawPath }) => {
-    const filePath = normalizeLocalFilePath(rawPath);
-    const pathMod = await loadPath();
-    if (!pathMod.isAbsolute(filePath)) {
-      throw new Error("Path must be absolute.");
+  server.handle(inspectMediaRpc, async ({ agentId, path: rawPath }, { paseo }) => {
+    const auth = await resolveAuthorizedMediaFile(agentId, rawPath, paseo);
+    if (!auth.ok) {
+      return {
+        ok: false,
+        ...(auth.blocked ? { blocked: true } : {}),
+        error: auth.error,
+      };
     }
-    const ext = pathMod.extname(filePath).toLowerCase();
-    const spec = MEDIA_EXT_MAP[ext];
-    if (!spec) {
-      throw new Error(`Unsupported media extension: ${ext}`);
+    return {
+      ok: true,
+      kind: auth.spec.kind,
+      mime: auth.spec.mime,
+      name: auth.name,
+      size: auth.size,
+    };
+  });
+
+  server.handle(readMediaBytesRpc, async ({ agentId, path: rawPath }, { paseo }) => {
+    const auth = await resolveAuthorizedMediaFile(agentId, rawPath, paseo);
+    if (!auth.ok) {
+      throw new Error(auth.error);
     }
     const fsMod = await loadFs();
-    const stat = await fsMod.stat(filePath);
-    if (!stat.isFile() || stat.size > spec.maxBytes) {
-      throw new Error("File is unavailable or exceeds preview size limit.");
-    }
-    const data = await fsMod.readFile(filePath);
+    const data = await fsMod.readFile(auth.resolvedPath);
     return new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
   });
 

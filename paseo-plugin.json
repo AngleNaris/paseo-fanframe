@@ -14,6 +14,6 @@
     "assets/preview-themes.png"
   ],
   "requirements": {
-    "paseo": ">=0.16.0"
+    "paseo": ">=0.17.0"
   }
 }
