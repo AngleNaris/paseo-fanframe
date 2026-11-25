@@ -270,68 +270,92 @@ export default function contribute(server: PluginServerContext) {
       return { ok: false, error: `Unsupported media extension: ${ext || "(none)"}` };
     }
 
-    // Resolve the active conversation's workspace root from the daemon.
-    const agentRef = paseo.agents.ref(agentId);
-    let workspaceCwd = agentRef.cwd;
-    if (!workspaceCwd) {
-      try {
-        const refreshed = await agentRef.refresh();
-        workspaceCwd = refreshed?.agent.cwd ?? agentRef.cwd;
-      } catch {
-        workspaceCwd = agentRef.cwd;
-      }
-    }
-    if (!workspaceCwd) {
-      return {
-        ok: false,
-        blocked: true,
-        error: "Unable to verify the active workspace directory for this agent.",
-      };
-    }
-
-    // Collect canonical allowed roots: active workspace + user-configured host directories.
-    const candidateRoots: string[] = [workspaceCwd];
+    // Read host-scoped media access settings (defaults to strict workspace-only containment).
+    let allowAllPaths = false;
+    const configuredExtraDirs: string[] = [];
     try {
       const settingsState = await mediaSettings.read();
       if (settingsState.status === "ready") {
+        allowAllPaths = settingsState.values.allowAllPaths === true;
         for (const dir of settingsState.values.extraAllowedDirs) {
           const normalized = normalizeLocalFilePath(dir);
           if (normalized && pathMod.isAbsolute(normalized)) {
-            candidateRoots.push(normalized);
+            configuredExtraDirs.push(normalized);
           }
         }
       }
     } catch {
-      // Fall back to workspace-only containment if settings cannot be read.
+      // Fall back to strict workspace-only containment if settings cannot be read.
     }
 
-    const canonicalRoots: string[] = [];
-    for (const root of candidateRoots) {
-      try {
-        canonicalRoots.push(await fsMod.realpath(root));
-      } catch {
-        // Ignore missing or inaccessible root entries.
-      }
-    }
-    if (canonicalRoots.length === 0) {
-      return {
-        ok: false,
-        blocked: true,
-        error: "No accessible workspace root could be resolved.",
-      };
-    }
-
-    // Resolve symlinks and relative segments on the target file before checking containment.
-    const caseInsensitive = procMod.platform === "win32";
     let resolvedFile: string;
-    try {
-      resolvedFile = await fsMod.realpath(filePath);
-    } catch {
-      // Avoid revealing whether files outside allowed roots exist.
-      const lexicallyAllowed = candidateRoots.some((root) =>
-        isWithinCanonicalRoot(pathMod, filePath, root, caseInsensitive),
+    if (allowAllPaths) {
+      try {
+        resolvedFile = await fsMod.realpath(filePath);
+      } catch {
+        return { ok: false, error: "File not found or unreadable." };
+      }
+    } else {
+      // Resolve the active conversation's workspace root from the daemon.
+      const agentRef = paseo.agents.ref(agentId);
+      let workspaceCwd = agentRef.cwd;
+      if (!workspaceCwd) {
+        try {
+          const refreshed = await agentRef.refresh();
+          workspaceCwd = refreshed?.agent.cwd ?? agentRef.cwd;
+        } catch {
+          workspaceCwd = agentRef.cwd;
+        }
+      }
+      if (!workspaceCwd) {
+        return {
+          ok: false,
+          blocked: true,
+          error: "Unable to verify the active workspace directory for this agent.",
+        };
+      }
+
+      const candidateRoots: string[] = [workspaceCwd, ...configuredExtraDirs];
+      const canonicalRoots: string[] = [];
+      for (const root of candidateRoots) {
+        try {
+          canonicalRoots.push(await fsMod.realpath(root));
+        } catch {
+          // Ignore missing or inaccessible root entries.
+        }
+      }
+      if (canonicalRoots.length === 0) {
+        return {
+          ok: false,
+          blocked: true,
+          error: "No accessible workspace root could be resolved.",
+        };
+      }
+
+      // Resolve symlinks and relative segments on the target file before checking containment.
+      const caseInsensitive = procMod.platform === "win32";
+      try {
+        resolvedFile = await fsMod.realpath(filePath);
+      } catch {
+        // Avoid revealing whether files outside allowed roots exist.
+        const lexicallyAllowed = candidateRoots.some((root) =>
+          isWithinCanonicalRoot(pathMod, filePath, root, caseInsensitive),
+        );
+        if (!lexicallyAllowed) {
+          return {
+            ok: false,
+            blocked: true,
+            error:
+              "File is outside the active workspace. Add its directory in Settings -> Plugins -> FanFrame to allow preview.",
+          };
+        }
+        return { ok: false, error: "File not found or unreadable." };
+      }
+
+      const allowed = canonicalRoots.some((root) =>
+        isWithinCanonicalRoot(pathMod, resolvedFile, root, caseInsensitive),
       );
-      if (!lexicallyAllowed) {
+      if (!allowed) {
         return {
           ok: false,
           blocked: true,
@@ -339,19 +363,6 @@ export default function contribute(server: PluginServerContext) {
             "File is outside the active workspace. Add its directory in Settings -> Plugins -> FanFrame to allow preview.",
         };
       }
-      return { ok: false, error: "File not found or unreadable." };
-    }
-
-    const allowed = canonicalRoots.some((root) =>
-      isWithinCanonicalRoot(pathMod, resolvedFile, root, caseInsensitive),
-    );
-    if (!allowed) {
-      return {
-        ok: false,
-        blocked: true,
-        error:
-          "File is outside the active workspace. Add its directory in Settings -> Plugins -> FanFrame to allow preview.",
-      };
     }
 
     try {

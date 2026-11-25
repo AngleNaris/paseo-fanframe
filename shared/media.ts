@@ -9,6 +9,8 @@ export const mediaAccessSettings = defineSettings({
   scope: "host",
   version: 1,
   schema: z.object({
+    /** Opt-in host toggle to bypass workspace/directory containment (default: false). */
+    allowAllPaths: z.boolean().default(false),
     /** Additional absolute directories explicitly allowed by the user on this host. */
     extraAllowedDirs: z.array(z.string().min(1)).default([]),
   }),

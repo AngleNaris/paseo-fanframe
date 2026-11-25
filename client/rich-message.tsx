@@ -542,7 +542,10 @@ function MediaSegmentCard({
         (entry) => entry.trim().toLowerCase() === parentDir.toLowerCase(),
       );
       const nextDirs = alreadyPresent ? existing : [...existing, parentDir];
-      const saved = await mediaSettings.save({ extraAllowedDirs: nextDirs }, mediaSettings.revision);
+      const saved = await mediaSettings.save(
+        { ...mediaSettings.values, extraAllowedDirs: nextDirs },
+        mediaSettings.revision,
+      );
       if (saved) {
         setReloadTick((n) => n + 1);
       } else {

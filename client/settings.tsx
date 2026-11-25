@@ -52,7 +52,7 @@ export function FanframeSettings({ theme, layout }: PluginSurfaceProps) {
     }
     setDirError(null);
     const saved = await mediaSettings.save(
-      { extraAllowedDirs: [...existing, normalized] },
+      { ...mediaSettings.values, extraAllowedDirs: [...existing, normalized] },
       mediaSettings.revision,
     );
     if (saved) {
@@ -63,7 +63,18 @@ export function FanframeSettings({ theme, layout }: PluginSurfaceProps) {
   const handleRemoveAllowedDir = async (target: string) => {
     if (mediaSettings.status !== "ready" || mediaSettings.saving) return;
     const nextDirs = mediaSettings.values.extraAllowedDirs.filter((entry) => entry !== target);
-    await mediaSettings.save({ extraAllowedDirs: nextDirs }, mediaSettings.revision);
+    await mediaSettings.save(
+      { ...mediaSettings.values, extraAllowedDirs: nextDirs },
+      mediaSettings.revision,
+    );
+  };
+
+  const handleToggleAllowAllPaths = async (value: boolean) => {
+    if (mediaSettings.status !== "ready" || mediaSettings.saving) return;
+    await mediaSettings.save(
+      { ...mediaSettings.values, allowAllPaths: value },
+      mediaSettings.revision,
+    );
   };
 
   return (
@@ -87,6 +98,16 @@ export function FanframeSettings({ theme, layout }: PluginSurfaceProps) {
         info="默认仅允许服务端自动读取当前对话工作区（workspace）内的媒体/文档文件。如需预览工作区外的目录，请在此显式添加绝对路径（按当前主机独立生效）。"
       >
         <SettingsCard>
+          {mediaSettings.status === "ready" ? (
+            <SettingsSwitch
+              label="允许预览本机所有路径（跳过工作区目录限制，仍校验文件类型与体积上限）"
+              value={mediaSettings.values.allowAllPaths}
+              disabled={mediaSettings.saving}
+              onValueChange={(value) => {
+                void handleToggleAllowAllPaths(value);
+              }}
+            />
+          ) : null}
           <View style={{ padding: 12, gap: 10 }}>
             {mediaSettings.status === "loading" ? (
               <Text style={{ color: c.foregroundMuted, fontSize: 12.5 }}>正在读取当前主机目录配置...</Text>
@@ -96,7 +117,11 @@ export function FanframeSettings({ theme, layout }: PluginSurfaceProps) {
               </Text>
             ) : (
               <>
-                {mediaSettings.values.extraAllowedDirs.length === 0 ? (
+                {mediaSettings.values.allowAllPaths ? (
+                  <Text style={{ color: c.foregroundMuted, fontSize: 12.5 }}>
+                    已开启全路径预览，当前主机可自动预览任意绝对路径下受支持格式的媒体文件；关闭后将恢复仅限工作区与下方白名单目录。
+                  </Text>
+                ) : mediaSettings.values.extraAllowedDirs.length === 0 ? (
                   <Text style={{ color: c.foregroundMuted, fontSize: 12.5 }}>
                     当前未添加额外目录（仅限当前对话工作区内文件）。
                   </Text>

@@ -135,7 +135,7 @@ For interactive charts, agents can call the built-in `fanframe_visualize` tool a
 
 - **No external network calls or telemetry**: Everything runs locally between your Paseo client and your own connected daemon host(s).
 - **Local storage**: Visual toggle states are stored in browser `localStorage`; cross-device uploaded images are stored under `~/.paseo/plugin-data/paseo-fanframe/shared-images/` (auto-pruned by age and count) and forwarded as prompt attachments to the selected agent provider.
-- **Host file reads (workspace-scoped by default)**: Inline media previews enforce server-side `realpath` containment against the active conversation's workspace directory (`agent.cwd`), bounded by an extension allowlist and per-type size limits. Files outside the active workspace are blocked from automatic inspection/reading unless the user explicitly adds their directory to the per-host allowlist in **Settings → Plugins → FanFrame** (or confirms from the blocked notice card).
+- **Host file reads (workspace-scoped by default)**: Inline media previews enforce server-side `realpath` containment against the active conversation's workspace directory (`agent.cwd`), bounded by an extension allowlist and per-type size limits. Files outside the active workspace are blocked from automatic inspection/reading unless the user explicitly adds their directory to the per-host allowlist, confirms from the blocked notice card, or enables the opt-in **"Allow all paths"** switch (off by default) under **Settings → Plugins → FanFrame**.
 - **Sandboxed visualizations**: All `fanframe_visualize` cards render inside `sandbox="allow-scripts"` iframes with `Content-Security-Policy: default-src 'none'`.
 
 ---
