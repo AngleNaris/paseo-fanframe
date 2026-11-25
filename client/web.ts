@@ -674,9 +674,22 @@ html[${MODE_ATTR}] [data-ff-sidebar-nav-full="true"] [data-ff-sidebar-nav-pad="t
   padding-left: 0 !important;
   padding-right: 0 !important;
 }
+html[${MODE_ATTR}] [data-ff-sidebar-nav-full="true"] [data-ff-sidebar-nav-row="true"],
+html[${MODE_ATTR}] [data-ff-sidebar-nav-full="true"] [data-ff-sidebar-nav-btn="true"] {
+  min-height: 28px !important;
+  height: 28px !important;
+}
+html[${MODE_ATTR}] [data-ff-sidebar-nav-full="true"] [data-ff-sidebar-nav-btn="true"] {
+  padding-top: 3px !important;
+  padding-bottom: 3px !important;
+}
 html[${MODE_ATTR}] [data-ff-sidebar-nav-full="true"] > button,
 html[${MODE_ATTR}] [data-ff-sidebar-nav-full="true"] > [role="button"] {
   margin-right: 0 !important;
+  min-height: 28px !important;
+  height: 28px !important;
+  min-width: 28px !important;
+  width: 28px !important;
 }
 html[${MODE_ATTR}] [data-ff-sidebar-nav-cell="true"] {
   min-width: 0 !important;
@@ -693,6 +706,8 @@ html[${MODE_ATTR}] [data-ff-sidebar-nav-cell="true"] [data-ff-sidebar-nav-pad="t
 html[${MODE_ATTR}] [data-ff-sidebar-nav-cell="true"] [data-ff-sidebar-nav-row="true"] {
   min-width: 0 !important;
   width: 100% !important;
+  min-height: 28px !important;
+  height: 28px !important;
   overflow: hidden !important;
 }
 html[${MODE_ATTR}] [data-ff-sidebar-nav-cell="true"] [data-ff-sidebar-nav-btn="true"] {
@@ -702,9 +717,13 @@ html[${MODE_ATTR}] [data-ff-sidebar-nav-cell="true"] [data-ff-sidebar-nav-btn="t
   justify-content: flex-start !important;
   min-width: 0 !important;
   width: 100% !important;
+  min-height: 28px !important;
+  height: 28px !important;
   gap: 5px !important;
   padding-left: 5px !important;
   padding-right: 5px !important;
+  padding-top: 3px !important;
+  padding-bottom: 3px !important;
   overflow: hidden !important;
 }
 html[${MODE_ATTR}] [data-ff-sidebar-nav-cell="true"] [data-ff-sidebar-nav-btn="true"] svg {
@@ -1390,9 +1409,14 @@ function mountSidebarNavGrid(): () => void {
         if (isFullRow) {
           markActive(item, "data-ff-sidebar-nav-full");
           for (const btn of buttons) {
-            const padEl = btn.parentElement?.parentElement;
-            if (padEl && item.contains?.(padEl) && padEl !== item) {
-              markActive(padEl, "data-ff-sidebar-nav-pad");
+            markActive(btn, "data-ff-sidebar-nav-btn");
+            const rowEl = btn.parentElement;
+            if (rowEl && item.contains?.(rowEl) && rowEl !== item) {
+              markActive(rowEl, "data-ff-sidebar-nav-row");
+              const padEl = rowEl.parentElement;
+              if (padEl && item.contains?.(padEl) && padEl !== item) {
+                markActive(padEl, "data-ff-sidebar-nav-pad");
+              }
             }
           }
           continue;
@@ -1964,6 +1988,7 @@ export interface WebMediaPlayerState {
 export interface WebMediaPlayerHandle {
   togglePlay(): void;
   seek(seconds: number): void;
+  seekRatio(ratio: number): void;
   toggleMute(): void;
   download(): void;
   toggleFullscreen(): void;
@@ -1977,6 +2002,7 @@ interface DomMediaElement extends DomElement {
   readonly paused: boolean;
   readonly ended: boolean;
   muted: boolean;
+  load?: () => void;
   play(): Promise<void> | void;
   pause(): void;
   requestFullscreen?: () => Promise<void> | void;
@@ -1987,8 +2013,16 @@ interface DomMediaElement extends DomElement {
 interface DomPointerTarget extends DomElement {
   setPointerCapture?(pointerId: number): void;
   releasePointerCapture?(pointerId: number): void;
-  addEventListener(type: string, listener: (ev: unknown) => void): void;
-  removeEventListener(type: string, listener: (ev: unknown) => void): void;
+  addEventListener(
+    type: string,
+    listener: (ev: unknown) => void,
+    options?: boolean | { passive?: boolean; capture?: boolean },
+  ): void;
+  removeEventListener(
+    type: string,
+    listener: (ev: unknown) => void,
+    options?: boolean | { passive?: boolean; capture?: boolean },
+  ): void;
 }
 
 interface DomAnchorElement extends DomElement {
@@ -2013,7 +2047,11 @@ export function createWebMediaPlayer(
 
   const blobUrl = URL.createObjectURL(new Blob([options.bytes], { type: options.mime }));
   const media = document.createElement(options.kind) as unknown as DomMediaElement;
-  media.setAttribute("preload", "metadata");
+  // Local blob is already in memory; preload="auto" ensures mobile browsers decode duration immediately.
+  media.setAttribute(
+    "preload",
+    options.kind === "audio" || options.bytes.byteLength <= 8 * 1024 * 1024 ? "auto" : "metadata",
+  );
   if (options.kind === "video") {
     media.setAttribute("playsinline", "");
     media.style.setProperty("display", "block");
@@ -2027,8 +2065,18 @@ export function createWebMediaPlayer(
   }
   media.src = blobUrl;
 
+  let pendingSeekRatio: number | null = null;
+
+  const readDuration = (): number =>
+    Number.isFinite(media.duration) && media.duration > 0 ? media.duration : 0;
+
   const emit = () => {
-    const dur = Number.isFinite(media.duration) && media.duration > 0 ? media.duration : 0;
+    const dur = readDuration();
+    if (dur > 0 && pendingSeekRatio !== null) {
+      const target = Math.max(0, Math.min(dur, pendingSeekRatio * dur));
+      pendingSeekRatio = null;
+      media.currentTime = target;
+    }
     const cur = Number.isFinite(media.currentTime) && media.currentTime >= 0 ? media.currentTime : 0;
     options.onState({
       playing: !media.paused && !media.ended,
@@ -2057,20 +2105,45 @@ export function createWebMediaPlayer(
     if (options.kind === "video") togglePlay();
   };
 
-  const events = ["loadedmetadata", "durationchange", "timeupdate", "play", "pause", "ended", "volumechange"];
+  const events = [
+    "loadedmetadata",
+    "loadeddata",
+    "canplay",
+    "durationchange",
+    "timeupdate",
+    "seeking",
+    "seeked",
+    "play",
+    "pause",
+    "ended",
+    "volumechange",
+  ];
   for (const ev of events) media.addEventListener(ev, emit);
   if (options.kind === "video") media.addEventListener("click", onVideoClick);
 
   container.appendChild(media);
+  media.load?.();
   emit();
 
   return {
     togglePlay,
     seek(seconds: number) {
-      const dur = Number.isFinite(media.duration) && media.duration > 0 ? media.duration : 0;
+      const dur = readDuration();
       if (dur <= 0) return;
       media.currentTime = Math.max(0, Math.min(dur, seconds));
       emit();
+    },
+    seekRatio(ratio: number) {
+      const clamped = Math.max(0, Math.min(1, ratio));
+      const dur = readDuration();
+      if (dur > 0) {
+        pendingSeekRatio = null;
+        media.currentTime = clamped * dur;
+        emit();
+      } else {
+        pendingSeekRatio = clamped;
+        media.load?.();
+      }
     },
     toggleMute() {
       media.muted = !media.muted;
@@ -2106,46 +2179,107 @@ export function createWebMediaPlayer(
 export function bindWebScrubber(
   host: unknown,
   onRatio: (ratio: number) => void,
+  onScrubbingChange?: (scrubbing: boolean) => void,
 ): () => void {
   if (Platform.OS !== "web") return () => {};
   const el = host as DomPointerTarget | null;
   if (!el || typeof el.addEventListener !== "function") return () => {};
 
   el.style.setProperty("touch-action", "none");
+  el.style.setProperty("user-select", "none");
+  el.style.setProperty("-webkit-user-select", "none");
   el.style.setProperty("cursor", "pointer");
 
-  let dragging = false;
+  let pointerDragging = false;
+  let touchDragging = false;
   let activePointerId: number | null = null;
 
-  const computeRatio = (rawEvent: unknown): number => {
-    const clientX = (rawEvent as { clientX?: number })?.clientX ?? 0;
+  const ratioFromClientX = (clientX: number): number => {
     const rect = el.getBoundingClientRect();
     if (rect.width <= 0) return 0;
     return Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
   };
 
+  const extractTouchX = (rawEvent: unknown): number | null => {
+    const ev = rawEvent as {
+      touches?: ArrayLike<{ clientX?: number }>;
+      changedTouches?: ArrayLike<{ clientX?: number }>;
+    };
+    const point =
+      (ev.touches && ev.touches.length > 0 ? ev.touches[0] : null) ??
+      (ev.changedTouches && ev.changedTouches.length > 0 ? ev.changedTouches[0] : null);
+    return typeof point?.clientX === "number" ? point.clientX : null;
+  };
+
+  const onTouchStart = (rawEvent: unknown) => {
+    const x = extractTouchX(rawEvent);
+    if (x === null) return;
+    (rawEvent as { preventDefault?: () => void }).preventDefault?.();
+    (rawEvent as { stopPropagation?: () => void }).stopPropagation?.();
+    touchDragging = true;
+    onScrubbingChange?.(true);
+    onRatio(ratioFromClientX(x));
+  };
+
+  const onTouchMove = (rawEvent: unknown) => {
+    if (!touchDragging) return;
+    const x = extractTouchX(rawEvent);
+    if (x === null) return;
+    (rawEvent as { preventDefault?: () => void }).preventDefault?.();
+    (rawEvent as { stopPropagation?: () => void }).stopPropagation?.();
+    onRatio(ratioFromClientX(x));
+  };
+
+  const onTouchEnd = (rawEvent: unknown) => {
+    if (!touchDragging) return;
+    const x = extractTouchX(rawEvent);
+    if (x !== null) onRatio(ratioFromClientX(x));
+    touchDragging = false;
+    onScrubbingChange?.(false);
+  };
+
   const onPointerDown = (rawEvent: unknown) => {
-    dragging = true;
-    const pid = (rawEvent as { pointerId?: number })?.pointerId;
-    if (typeof pid === "number") {
-      activePointerId = pid;
+    const ev = rawEvent as {
+      pointerType?: string;
+      pointerId?: number;
+      clientX?: number;
+      preventDefault?: () => void;
+      stopPropagation?: () => void;
+    };
+    if (ev.pointerType === "touch") return;
+    ev.preventDefault?.();
+    ev.stopPropagation?.();
+    pointerDragging = true;
+    onScrubbingChange?.(true);
+    if (typeof ev.pointerId === "number") {
+      activePointerId = ev.pointerId;
       try {
-        el.setPointerCapture?.(pid);
+        el.setPointerCapture?.(ev.pointerId);
       } catch {
         // Ignore capture failure on synthetic events.
       }
     }
-    onRatio(computeRatio(rawEvent));
+    if (typeof ev.clientX === "number") onRatio(ratioFromClientX(ev.clientX));
   };
 
   const onPointerMove = (rawEvent: unknown) => {
-    if (!dragging) return;
-    onRatio(computeRatio(rawEvent));
+    if (!pointerDragging) return;
+    const ev = rawEvent as {
+      pointerType?: string;
+      clientX?: number;
+      preventDefault?: () => void;
+      stopPropagation?: () => void;
+    };
+    if (ev.pointerType === "touch") return;
+    ev.preventDefault?.();
+    ev.stopPropagation?.();
+    if (typeof ev.clientX === "number") onRatio(ratioFromClientX(ev.clientX));
   };
 
   const onPointerEnd = () => {
-    if (!dragging) return;
-    dragging = false;
+    if (!pointerDragging) return;
+    pointerDragging = false;
+    onScrubbingChange?.(false);
     if (activePointerId !== null) {
       try {
         el.releasePointerCapture?.(activePointerId);
@@ -2156,12 +2290,20 @@ export function bindWebScrubber(
     }
   };
 
+  el.addEventListener("touchstart", onTouchStart, { passive: false });
+  el.addEventListener("touchmove", onTouchMove, { passive: false });
+  el.addEventListener("touchend", onTouchEnd);
+  el.addEventListener("touchcancel", onTouchEnd);
   el.addEventListener("pointerdown", onPointerDown);
   el.addEventListener("pointermove", onPointerMove);
   el.addEventListener("pointerup", onPointerEnd);
   el.addEventListener("pointercancel", onPointerEnd);
 
   return () => {
+    el.removeEventListener("touchstart", onTouchStart, { passive: false });
+    el.removeEventListener("touchmove", onTouchMove, { passive: false });
+    el.removeEventListener("touchend", onTouchEnd);
+    el.removeEventListener("touchcancel", onTouchEnd);
     el.removeEventListener("pointerdown", onPointerDown);
     el.removeEventListener("pointermove", onPointerMove);
     el.removeEventListener("pointerup", onPointerEnd);

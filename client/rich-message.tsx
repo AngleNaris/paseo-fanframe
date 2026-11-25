@@ -153,7 +153,6 @@ function FanframeMediaPlayer({
   const mediaHostRef = useRef<unknown>(null);
   const scrubRef = useRef<unknown>(null);
   const playerRef = useRef<WebMediaPlayerHandle | null>(null);
-  const durationRef = useRef(0);
 
   const [state, setState] = useState<WebMediaPlayerState>({
     playing: false,
@@ -164,9 +163,8 @@ function FanframeMediaPlayer({
     ended: false,
   });
   const [hoveredBtn, setHoveredBtn] = useState<string | null>(null);
-  const [scrubHovered, setScrubHovered] = useState(false);
-
-  durationRef.current = state.duration;
+  const [scrubActive, setScrubActive] = useState(false);
+  const [scrubPreviewRatio, setScrubPreviewRatio] = useState<number | null>(null);
 
   useEffect(() => {
     if (Platform.OS !== "web" || !mediaHostRef.current) return;
@@ -186,28 +184,74 @@ function FanframeMediaPlayer({
 
   useEffect(() => {
     if (Platform.OS !== "web" || !scrubRef.current) return;
-    return bindWebScrubber(scrubRef.current, (ratio) => {
-      const dur = durationRef.current;
-      if (dur > 0) {
-        playerRef.current?.seek(ratio * dur);
-      }
-    });
+    return bindWebScrubber(
+      scrubRef.current,
+      (ratio) => {
+        setScrubPreviewRatio(ratio);
+        playerRef.current?.seekRatio(ratio);
+      },
+      (scrubbing) => {
+        setScrubActive(scrubbing);
+        if (!scrubbing) setScrubPreviewRatio(null);
+      },
+    );
   }, []);
 
-  const progress = state.duration > 0 ? Math.max(0, Math.min(1, state.currentTime / state.duration)) : 0;
-  const pct = `${(progress * 100).toFixed(2)}%` as `${number}%`;
+  const liveProgress =
+    state.duration > 0 ? Math.max(0, Math.min(1, state.currentTime / state.duration)) : 0;
+  const displayProgress = scrubActive && scrubPreviewRatio !== null ? scrubPreviewRatio : liveProgress;
+  const displayTime =
+    scrubActive && scrubPreviewRatio !== null && state.duration > 0
+      ? scrubPreviewRatio * state.duration
+      : state.currentTime;
+  const pct = `${(displayProgress * 100).toFixed(2)}%` as `${number}%`;
+  const playSize = compact ? 32 : 28;
+  const utilSize = compact ? 30 : 26;
+  const thumbSize = scrubActive ? 12 : compact ? 10 : state.playing ? 8 : 7;
 
   return (
     <View testID={`fanframe-custom-${kind}-player`}>
       {/* Video frame (or hidden audio host) */}
       <View
-        ref={mediaHostRef as never}
         style={
           kind === "video"
-            ? { width: "100%", backgroundColor: "#000", overflow: "hidden" }
+            ? { width: "100%", backgroundColor: "#000", overflow: "hidden", position: "relative" }
             : { height: 0, width: 0, overflow: "hidden" }
         }
-      />
+      >
+        <View ref={mediaHostRef as never} style={{ width: "100%" }} />
+        {kind === "video" && !state.playing ? (
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="播放视频"
+            onPress={() => playerRef.current?.togglePlay()}
+            style={{
+              position: "absolute",
+              top: 0,
+              left: 0,
+              right: 0,
+              bottom: 0,
+              alignItems: "center",
+              justifyContent: "center",
+              backgroundColor: "rgba(16, 18, 22, 0.24)",
+            }}
+          >
+            <View
+              style={{
+                width: 44,
+                height: 44,
+                alignItems: "center",
+                justifyContent: "center",
+                borderWidth: 1,
+                borderColor: c.accent,
+                backgroundColor: "rgba(28, 30, 35, 0.86)",
+              }}
+            >
+              <Icon name="Play" size={18} color={c.foreground} />
+            </View>
+          </Pressable>
+        ) : null}
+      </View>
 
       {/* FanFrame sharp minimal transport bar */}
       <View
@@ -216,7 +260,7 @@ function FanframeMediaPlayer({
           alignItems: "center",
           gap: compact ? 8 : 10,
           paddingHorizontal: compact ? 8 : 10,
-          paddingVertical: compact ? 7 : 8,
+          paddingVertical: compact ? 6 : 8,
           backgroundColor: c.surface0,
           ...(kind === "video" ? { borderTopWidth: 1, borderTopColor: c.border } : {}),
         }}
@@ -230,8 +274,8 @@ function FanframeMediaPlayer({
           onHoverIn={() => setHoveredBtn("play")}
           onHoverOut={() => setHoveredBtn(null)}
           style={{
-            width: 28,
-            height: 28,
+            width: playSize,
+            height: playSize,
             alignItems: "center",
             justifyContent: "center",
             borderWidth: 1,
@@ -241,7 +285,7 @@ function FanframeMediaPlayer({
         >
           <Icon
             name={state.playing ? "Pause" : "Play"}
-            size={13}
+            size={compact ? 14 : 13}
             color={state.playing ? c.accentForeground : c.foreground}
           />
         </Pressable>
@@ -249,34 +293,35 @@ function FanframeMediaPlayer({
         {/* Time readout */}
         <Text
           style={{
-            color: c.foregroundMuted,
+            color: scrubActive ? c.foreground : c.foregroundMuted,
             fontSize: 11.5,
             fontVariant: ["tabular-nums"],
             minWidth: compact ? 64 : 70,
           }}
         >
-          {formatMediaTime(state.currentTime)} / {formatMediaTime(state.duration)}
+          {formatMediaTime(displayTime)} / {state.duration > 0 ? formatMediaTime(state.duration) : "--:--"}
         </Text>
 
-        {/* Scrubber track */}
-        <Pressable
+        {/* Touch-friendly scrubber track (plain View so RNW Pressable never swallows mobile touch drags) */}
+        <View
           ref={scrubRef as never}
           testID="fanframe-player-scrubber"
+          accessible
           accessibilityRole="adjustable"
           accessibilityLabel="播放进度"
-          onHoverIn={() => setScrubHovered(true)}
-          onHoverOut={() => setScrubHovered(false)}
           style={{
             flex: 1,
-            minWidth: 60,
-            height: 24,
+            minWidth: 64,
+            height: compact ? 36 : 28,
             justifyContent: "center",
+            paddingHorizontal: 2,
           }}
         >
           <View
+            pointerEvents="none"
             style={{
               width: "100%",
-              height: scrubHovered ? 3 : 2,
+              height: scrubActive ? 4 : compact ? 3 : 2,
               backgroundColor: c.surface2,
               position: "relative",
               justifyContent: "center",
@@ -293,14 +338,16 @@ function FanframeMediaPlayer({
               style={{
                 position: "absolute",
                 left: pct,
-                width: scrubHovered || state.playing ? 8 : 6,
-                height: scrubHovered || state.playing ? 8 : 6,
-                marginLeft: scrubHovered || state.playing ? -4 : -3,
-                backgroundColor: scrubHovered ? c.foreground : c.accent,
+                width: thumbSize,
+                height: thumbSize,
+                marginLeft: -(thumbSize / 2),
+                backgroundColor: scrubActive ? c.foreground : c.accent,
+                borderWidth: 1,
+                borderColor: c.surface0,
               }}
             />
           </View>
-        </Pressable>
+        </View>
 
         {/* Mute toggle */}
         <Pressable
@@ -311,8 +358,8 @@ function FanframeMediaPlayer({
           onHoverIn={() => setHoveredBtn("mute")}
           onHoverOut={() => setHoveredBtn(null)}
           style={{
-            width: 26,
-            height: 26,
+            width: utilSize,
+            height: utilSize,
             alignItems: "center",
             justifyContent: "center",
             borderWidth: 1,
@@ -322,7 +369,7 @@ function FanframeMediaPlayer({
         >
           <Icon
             name={state.muted ? "VolumeX" : "Volume2"}
-            size={13}
+            size={compact ? 14 : 13}
             color={state.muted ? c.foregroundMuted : c.foreground}
           />
         </Pressable>
@@ -337,8 +384,8 @@ function FanframeMediaPlayer({
             onHoverIn={() => setHoveredBtn("fs")}
             onHoverOut={() => setHoveredBtn(null)}
             style={{
-              width: 26,
-              height: 26,
+              width: utilSize,
+              height: utilSize,
               alignItems: "center",
               justifyContent: "center",
               borderWidth: 1,
@@ -346,7 +393,7 @@ function FanframeMediaPlayer({
               backgroundColor: hoveredBtn === "fs" ? c.surface2 : "transparent",
             }}
           >
-            <Icon name="Maximize2" size={13} color={c.foregroundMuted} />
+            <Icon name="Maximize2" size={compact ? 14 : 13} color={c.foregroundMuted} />
           </Pressable>
         ) : null}
 
@@ -359,8 +406,8 @@ function FanframeMediaPlayer({
           onHoverIn={() => setHoveredBtn("dl")}
           onHoverOut={() => setHoveredBtn(null)}
           style={{
-            width: 26,
-            height: 26,
+            width: utilSize,
+            height: utilSize,
             alignItems: "center",
             justifyContent: "center",
             borderWidth: 1,
@@ -368,7 +415,7 @@ function FanframeMediaPlayer({
             backgroundColor: hoveredBtn === "dl" ? c.surface2 : "transparent",
           }}
         >
-          <Icon name="Download" size={13} color={c.foregroundMuted} />
+          <Icon name="Download" size={compact ? 14 : 13} color={c.foregroundMuted} />
         </Pressable>
       </View>
     </View>
@@ -924,15 +971,26 @@ function MediaSegmentCard({
               borderBottomColor: c.border,
             }}
           >
-            <Text
-              style={{ color: c.foreground, fontSize: 12, fontWeight: "600", flexShrink: 1 }}
-              numberOfLines={1}
-            >
-              {displayTitle}
-            </Text>
-            {sizeLabel ? (
-              <Text style={{ color: c.foregroundMuted, fontSize: 11.5 }}>{sizeLabel}</Text>
-            ) : null}
+            <View style={{ flexDirection: "row", alignItems: "center", gap: 6, flexShrink: 1 }}>
+              <Icon name="Image" size={13} color={c.foregroundMuted} />
+              <Text
+                style={{ color: c.foreground, fontSize: 12, fontWeight: "600", flexShrink: 1 }}
+                numberOfLines={1}
+              >
+                {displayTitle}
+              </Text>
+            </View>
+            <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+              {imageDims ? (
+                <Text style={{ color: c.foregroundMuted, fontSize: 11, fontVariant: ["tabular-nums"] }}>
+                  {imageDims.w}×{imageDims.h}
+                </Text>
+              ) : null}
+              {sizeLabel ? (
+                <Text style={{ color: c.foregroundMuted, fontSize: 11.5 }}>{sizeLabel}</Text>
+              ) : null}
+              <Icon name="Maximize2" size={11} color={c.foregroundMuted} />
+            </View>
           </View>
           <Pressable
             accessibilityRole="button"
