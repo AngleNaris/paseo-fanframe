@@ -1,5 +1,6 @@
 import { defineAgentTool, type PluginServerContext } from "@getpaseo/plugin/server";
 import { z } from "zod";
+import { registerCrossFileHandlers } from "./server/cross-file";
 import { registerCrossImageHandlers } from "./server/cross-image";
 import {
   inspectMediaRpc,
@@ -225,6 +226,7 @@ export default function contribute(server: PluginServerContext) {
   });
 
   const cleanupCrossImage = registerCrossImageHandlers(server);
+  const cleanupCrossFile = registerCrossFileHandlers(server);
   const mediaSettings = server.registerSettings(mediaAccessSettings);
 
   const isWithinCanonicalRoot = (
@@ -419,6 +421,7 @@ export default function contribute(server: PluginServerContext) {
   });
 
   return () => {
+    cleanupCrossFile();
     cleanupCrossImage();
     removeTurnEnded();
     removeHook();

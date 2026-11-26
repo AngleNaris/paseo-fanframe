@@ -1,4 +1,9 @@
 import { Platform } from "react-native";
+import {
+  type CrossFileKind,
+  MAX_CROSS_FILE_BYTES,
+  inferCrossFileKind,
+} from "../shared/cross-file";
 
 export interface FanframePrefs {
   sharpCorners: boolean;
@@ -37,6 +42,10 @@ interface DomText extends DomNode {
 }
 interface DomElement extends DomNode {
   readonly isConnected: boolean;
+  readonly tagName?: string;
+  scrollTop: number;
+  readonly scrollHeight: number;
+  readonly clientHeight: number;
   textContent: string | null;
   readonly dataset: Record<string, string | undefined>;
   readonly style: {
@@ -55,10 +64,22 @@ interface DomElement extends DomNode {
   removeAttribute(name: string): void;
   cloneNode?(deep?: boolean): DomElement;
   insertBefore?(newNode: DomElement, referenceNode: DomNode | null): DomElement;
+  scrollTo?(...args: unknown[]): void;
+  addEventListener(
+    type: string,
+    listener: (event: unknown) => void,
+    options?: boolean | { passive?: boolean; capture?: boolean; once?: boolean },
+  ): void;
+  removeEventListener(
+    type: string,
+    listener: (event: unknown) => void,
+    options?: boolean | { passive?: boolean; capture?: boolean; once?: boolean },
+  ): void;
   animate?(
     keyframes: Array<Record<string, string | number>>,
     options: { duration: number; easing?: string; fill?: string },
   ): { cancel(): void; onfinish?: (() => void) | null; oncancel?: (() => void) | null };
+  getAnimations?(): Array<{ cancel(): void }>;
   remove(): void;
   appendChild(child: DomElement): DomElement;
 }
@@ -67,6 +88,7 @@ interface DomMutationRecord {
   readonly target: DomNode;
   readonly addedNodes: Iterable<DomNode>;
   readonly removedNodes: Iterable<DomNode>;
+  readonly previousSibling: DomNode | null;
   readonly nextSibling: DomNode | null;
 }
 interface DomMutationObserver {
@@ -94,8 +116,20 @@ declare const document: {
   readonly documentElement: DomElement;
   createElement(tag: string): DomElement;
   querySelector(selector: string): DomElement | null;
+  querySelectorAll(selector: string): Iterable<DomElement>;
 };
+interface FanframeWebSingleton {
+  readonly version: number;
+  refCount: number;
+  reapply: () => void;
+  teardown: () => void;
+}
+
 declare const window: {
+  __paseoFanframeWeb?: FanframeWebSingleton;
+  readonly location?: {
+    readonly href?: string;
+  };
   readonly localStorage?: {
     getItem(key: string): string | null;
     setItem(key: string, value: string): void;
@@ -108,6 +142,8 @@ declare const window: {
     backgroundColor?: string;
     colorScheme?: string;
     position?: string;
+    overflowY?: string;
+    opacity?: string;
     borderTopColor?: string;
     borderRightColor?: string;
     borderBottomColor?: string;
@@ -117,9 +153,26 @@ declare const window: {
   matchMedia?(query: string): { matches: boolean };
   requestAnimationFrame(cb: () => void): number;
   cancelAnimationFrame(id: number): void;
-  addEventListener(type: string, listener: (event: unknown) => void, capture?: boolean): void;
-  removeEventListener(type: string, listener: (event: unknown) => void, capture?: boolean): void;
+  setTimeout(cb: () => void, ms: number): number;
+  clearTimeout(id: number): void;
+  addEventListener(
+    type: string,
+    listener: (event: unknown) => void,
+    options?: boolean | { passive?: boolean; capture?: boolean },
+  ): void;
+  removeEventListener(
+    type: string,
+    listener: (event: unknown) => void,
+    options?: boolean | { passive?: boolean; capture?: boolean },
+  ): void;
 };
+declare const navigator:
+  | {
+      readonly clipboard?: {
+        writeText?(text: string): Promise<void>;
+      };
+    }
+  | undefined;
 declare const performance: { now(): number };
 declare const URL: {
   createObjectURL(blob: unknown): string;
@@ -157,8 +210,6 @@ interface DomInputElement extends DomElement {
   multiple: boolean;
   readonly files: ArrayLike<DomWebFile> | null;
   click(): void;
-  addEventListener(type: string, listener: () => void, options?: { once?: boolean }): void;
-  removeEventListener(type: string, listener: () => void): void;
 }
 declare const Image: new () => DomImageElement;
 declare const MutationObserver: new (cb: (records: DomMutationRecord[]) => void) => DomMutationObserver;
@@ -245,7 +296,12 @@ export function updateFanframePrefs(patch: Partial<FanframePrefs>): FanframePref
     } catch {
       // Ignore storage quota or private-mode failures.
     }
-    applyWebEnhancements();
+    const singleton = window.__paseoFanframeWeb;
+    if (singleton) {
+      singleton.reapply();
+    } else {
+      applyWebEnhancements();
+    }
   }
   for (const listener of prefListeners) listener();
   return activePrefs;
@@ -308,6 +364,10 @@ html[${MODE_ATTR}="dark"] [data-testid="context-window-meter"] svg circle[stroke
 }
 html[${MODE_ATTR}="light"] [data-testid="context-window-meter"] svg circle[stroke-dasharray][stroke="#f59e0b" i] {
   stroke: #d97706 !important;
+}
+/* FanFrame: Never allow legacy collapse ghosts inside chat scroll (guards multi-host mixed versions) */
+html[${MODE_ATTR}] [data-testid="agent-chat-scroll"] [data-ff-collapse-ghost="true"]:not([data-ff-collapse-drawer="true"]) {
+  display: none !important;
 }
 /* FanFrame: Match sidebar project & workspace row height (28px) to top-left sidebar nav buttons */
 html[${MODE_ATTR}] [data-testid^="sidebar-workspace-row-"],
@@ -625,7 +685,7 @@ html[${MODE_ATTR}="light"]::highlight(paseo-fanframe-soft) { color: color-mix(in
     [tabindex="0"],
     [data-testid="tool-call-badge"],
     [data-testid="scroll-to-bottom-button"]
-  ):not([role="dialog"]):not([role="menu"]):not([role="listbox"]):not([data-ff-square-spinner]):not([data-ff-square-arc]):not([data-ff-scroll-host]):not([data-ff-collapse-ghost]) {
+  ):not([role="dialog"]):not([role="menu"]):not([role="listbox"]):not([data-ff-square-spinner]):not([data-ff-square-arc]):not([data-ff-scroll-host]):not([data-ff-collapse-ghost]):not([data-ff-collapse-drawer]) {
     transition-property: background-color, color, border-color, opacity, fill, stroke !important;
     transition-duration: 140ms !important;
     transition-timing-function: cubic-bezier(0.4, 0, 0.2, 1) !important;
@@ -1134,6 +1194,7 @@ function applyWebEnhancements(): void {
   const stopSquareSpinners = mountSquareSpinners();
   const stopProjectTitleColors = mountProjectTitleColors();
   const stopSidebarNavGrid = activePrefs.sidebarNavGrid ? mountSidebarNavGrid() : () => {};
+  const stopChatScrollGuard = mountChatScrollGuard();
 
   activeTeardown = () => {
     if (modeFrame) window.cancelAnimationFrame(modeFrame);
@@ -1143,6 +1204,7 @@ function applyWebEnhancements(): void {
     clearHost();
     document.documentElement.removeAttribute("data-ff-scroll-right");
     document.documentElement.style.removeProperty("--ff-scroll-right");
+    stopChatScrollGuard();
     stopSidebarNavGrid();
     stopProjectTitleColors();
     stopSquareSpinners();
@@ -1154,15 +1216,61 @@ function applyWebEnhancements(): void {
   };
 }
 
+const FANFRAME_WEB_SINGLETON_VERSION = 4;
+
 export function installFanframeWeb(): () => void {
   if (Platform.OS !== "web") return () => {};
   activePrefs = readFanframePrefs();
+
+  const existing = window.__paseoFanframeWeb;
+  if (existing && existing.version >= FANFRAME_WEB_SINGLETON_VERSION) {
+    existing.refCount += 1;
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      clearCrossImageUrlCache();
+      existing.refCount -= 1;
+      if (existing.refCount <= 0 && window.__paseoFanframeWeb === existing) {
+        existing.teardown();
+        delete window.__paseoFanframeWeb;
+      }
+    };
+  }
+
+  let inheritedRefs = 0;
+  if (existing) {
+    inheritedRefs = existing.refCount;
+    existing.teardown();
+    delete window.__paseoFanframeWeb;
+  }
+
   applyWebEnhancements();
+  const singleton: FanframeWebSingleton = {
+    version: FANFRAME_WEB_SINGLETON_VERSION,
+    refCount: inheritedRefs + 1,
+    reapply: () => {
+      activePrefs = readFanframePrefs();
+      applyWebEnhancements();
+    },
+    teardown: () => {
+      if (activeTeardown) {
+        activeTeardown();
+        activeTeardown = null;
+      }
+    },
+  };
+  window.__paseoFanframeWeb = singleton;
+
+  let released = false;
   return () => {
+    if (released) return;
+    released = true;
     clearCrossImageUrlCache();
-    if (activeTeardown) {
-      activeTeardown();
-      activeTeardown = null;
+    singleton.refCount -= 1;
+    if (singleton.refCount <= 0 && window.__paseoFanframeWeb === singleton) {
+      singleton.teardown();
+      delete window.__paseoFanframeWeb;
     }
   };
 }
@@ -1583,6 +1691,411 @@ function mountProjectTitleColors(): () => void {
   };
 }
 
+const CHAT_SCROLL_SELECTOR = '[data-testid="agent-chat-scroll"]';
+const CHAT_ROW_DISCLOSURE_SELECTOR = '[data-testid="turn-summary"],[data-testid="tool-call-group"]';
+const CHAT_DISCLOSURE_SELECTOR =
+  '[data-testid="turn-summary"],[data-testid="tool-call-group"],[data-testid="tool-call-badge"],summary';
+
+function mountChatScrollGuard(): () => void {
+  if (Platform.OS !== "web") return () => {};
+
+  const BOTTOM_EPSILON = 24;
+  const INITIAL_GRACE_MS = 900;
+  const ROUTE_GRACE_MS = 700;
+  const EXPLICIT_JUMP_MS = 1000;
+  const DOWNWARD_INPUT_WINDOW_MS = 1200;
+
+  interface GuardState {
+    el: DomElement;
+    followingBottom: boolean;
+    initialGraceUntil: number;
+    explicitJumpUntil: number;
+    lastDownwardInputAt: number;
+    inAllowedAutoScroll: boolean;
+    lastScrollTop: number;
+    lastScrollHeight: number;
+    lastClientHeight: number;
+    lastHref: string;
+    lastTouchY: number | null;
+    scrollbarDragging: boolean;
+    cleanup: () => void;
+  }
+
+  const guards = new Map<DomElement, GuardState>();
+
+  const isEditableTarget = (target: DomNode | null | undefined): boolean => {
+    if (!target || target.nodeType !== 1) return false;
+    const editable = (target as DomElement).closest("input,textarea,[contenteditable]");
+    if (!editable) return false;
+    const tag = (editable.tagName ?? "").toLowerCase();
+    return (
+      tag === "input" ||
+      tag === "textarea" ||
+      (editable.getAttribute("contenteditable") ?? "").toLowerCase() !== "false"
+    );
+  };
+
+  const hasInnerScrollable = (
+    target: DomNode | null | undefined,
+    stopEl: DomElement,
+    dir: "up" | "down",
+  ): boolean => {
+    let cur: DomElement | null = target && target.nodeType === 1 ? (target as DomElement) : null;
+    while (cur && cur !== stopEl && cur !== document.body) {
+      const oy = window.getComputedStyle?.(cur)?.overflowY;
+      if ((oy === "auto" || oy === "scroll") && cur.scrollHeight > cur.clientHeight + 1) {
+        if (dir === "up" && cur.scrollTop > 0) return true;
+        if (dir === "down" && cur.scrollTop + cur.clientHeight < cur.scrollHeight - 1) return true;
+      }
+      cur = cur.parentElement;
+    }
+    return false;
+  };
+
+  const distanceFromBottom = (el: DomElement): number =>
+    Math.max(0, el.scrollHeight - el.clientHeight - el.scrollTop);
+
+  const detach = (state: GuardState) => {
+    state.followingBottom = false;
+    state.initialGraceUntil = 0;
+    state.explicitJumpUntil = 0;
+  };
+
+  const attach = (el: DomElement) => {
+    if (guards.has(el)) return;
+
+    const isHiddenInitial = window.getComputedStyle?.(el)?.opacity === "0";
+    const initialDist = distanceFromBottom(el);
+    const fitsViewport = el.clientHeight === 0 || el.scrollHeight <= el.clientHeight + 2;
+
+    const hadOwnScrollTo = Object.prototype.hasOwnProperty.call(el, "scrollTo");
+    const origScrollTo = el.scrollTo;
+
+    const state: GuardState = {
+      el,
+      followingBottom: isHiddenInitial || fitsViewport || initialDist <= BOTTOM_EPSILON,
+      initialGraceUntil: isHiddenInitial || el.clientHeight === 0 ? performance.now() + INITIAL_GRACE_MS : 0,
+      explicitJumpUntil: 0,
+      lastDownwardInputAt: 0,
+      inAllowedAutoScroll: false,
+      lastScrollTop: el.scrollTop,
+      lastScrollHeight: el.scrollHeight,
+      lastClientHeight: el.clientHeight,
+      lastHref: window.location?.href ?? "",
+      lastTouchY: null,
+      scrollbarDragging: false,
+      cleanup: () => {},
+    };
+
+    const syncMetrics = () => {
+      state.lastScrollTop = el.scrollTop;
+      state.lastScrollHeight = el.scrollHeight;
+      state.lastClientHeight = el.clientHeight;
+    };
+
+    if (typeof origScrollTo === "function") {
+      el.scrollTo = (...args: unknown[]) => {
+        const href = window.location?.href ?? "";
+        if (href && href !== state.lastHref) {
+          state.lastHref = href;
+          state.followingBottom = true;
+          state.initialGraceUntil = performance.now() + ROUTE_GRACE_MS;
+        }
+
+        let targetTop: number | undefined;
+        if (args.length >= 1 && typeof args[0] === "object" && args[0] !== null) {
+          const maybeTop = (args[0] as { top?: unknown }).top;
+          if (typeof maybeTop === "number") targetTop = maybeTop;
+        } else if (args.length >= 2 && typeof args[1] === "number") {
+          targetTop = args[1];
+        }
+
+        const maxScroll = Math.max(0, el.scrollHeight - el.clientHeight);
+        const isBottomJump =
+          typeof targetTop === "number" && maxScroll > 2 && targetTop >= maxScroll - 4;
+
+        if (!isBottomJump) {
+          origScrollTo.apply(el, args);
+          syncMetrics();
+          return;
+        }
+
+        const now = performance.now();
+        const hidden = window.getComputedStyle?.(el)?.opacity === "0";
+        const inExplicitJump = now < state.explicitJumpUntil;
+        const inInitialGrace = now < state.initialGraceUntil;
+
+        const prevMax = Math.max(0, state.lastScrollHeight - state.lastClientHeight);
+        const wasFarFromBottom =
+          prevMax > 2 &&
+          prevMax - state.lastScrollTop > BOTTOM_EPSILON * 2 &&
+          el.scrollTop < maxScroll - BOTTOM_EPSILON * 2;
+
+        if (!hidden && !inExplicitJump && !inInitialGrace && wasFarFromBottom) {
+          state.followingBottom = false;
+        }
+
+        const allowed = hidden || inExplicitJump || inInitialGrace || state.followingBottom;
+        if (!allowed) {
+          state.lastScrollHeight = el.scrollHeight;
+          state.lastClientHeight = el.clientHeight;
+          return;
+        }
+
+        state.inAllowedAutoScroll = true;
+        try {
+          origScrollTo.apply(el, args);
+        } finally {
+          state.inAllowedAutoScroll = false;
+        }
+        syncMetrics();
+      };
+    }
+
+    const noteDownwardInput = () => {
+      state.lastDownwardInputAt = performance.now();
+      if (distanceFromBottom(el) <= BOTTOM_EPSILON) {
+        state.followingBottom = true;
+      }
+    };
+
+    const onWheel = (rawEvent: unknown) => {
+      const ev = rawEvent as { ctrlKey?: boolean; deltaY?: number; target?: DomNode | null };
+      if (ev.ctrlKey || typeof ev.deltaY !== "number") return;
+      if (ev.deltaY < 0) {
+        if (!hasInnerScrollable(ev.target, el, "up")) {
+          detach(state);
+        }
+      } else if (ev.deltaY > 0) {
+        if (!hasInnerScrollable(ev.target, el, "down")) {
+          noteDownwardInput();
+        }
+      }
+    };
+
+    const onKeyDown = (rawEvent: unknown) => {
+      const ev = rawEvent as { key?: string; shiftKey?: boolean; target?: DomNode | null };
+      if (isEditableTarget(ev.target)) return;
+      const key = ev.key ?? "";
+      if (
+        key === "ArrowUp" ||
+        key === "PageUp" ||
+        key === "Home" ||
+        (key === " " && ev.shiftKey)
+      ) {
+        if (!hasInnerScrollable(ev.target, el, "up")) {
+          detach(state);
+        }
+      } else if (
+        key === "ArrowDown" ||
+        key === "PageDown" ||
+        key === "End" ||
+        (key === " " && !ev.shiftKey)
+      ) {
+        if (!hasInnerScrollable(ev.target, el, "down")) {
+          noteDownwardInput();
+        }
+      }
+    };
+
+    const onTouchStart = (rawEvent: unknown) => {
+      const ev = rawEvent as { touches?: ArrayLike<{ clientY?: number }> };
+      const y = ev.touches && ev.touches.length > 0 ? ev.touches[0]?.clientY : undefined;
+      state.lastTouchY = typeof y === "number" ? y : null;
+    };
+
+    const onTouchMove = (rawEvent: unknown) => {
+      const ev = rawEvent as {
+        touches?: ArrayLike<{ clientY?: number }>;
+        target?: DomNode | null;
+      };
+      const y = ev.touches && ev.touches.length > 0 ? ev.touches[0]?.clientY : undefined;
+      if (typeof y !== "number") return;
+      if (state.lastTouchY !== null) {
+        if (y > state.lastTouchY + 2 && !hasInnerScrollable(ev.target, el, "up")) {
+          detach(state);
+        } else if (y < state.lastTouchY - 2 && !hasInnerScrollable(ev.target, el, "down")) {
+          noteDownwardInput();
+        }
+      }
+      state.lastTouchY = y;
+    };
+
+    const onTouchEnd = () => {
+      state.lastTouchY = null;
+    };
+
+    const onScroll = () => {
+      if (state.inAllowedAutoScroll) {
+        syncMetrics();
+        return;
+      }
+      const curTop = el.scrollTop;
+      const curHeight = el.scrollHeight;
+      const curClient = el.clientHeight;
+      const dist = Math.max(0, curHeight - curClient - curTop);
+      const shrank = curHeight < state.lastScrollHeight - 2;
+
+      if (!shrank && curTop < state.lastScrollTop - 2 && dist > BOTTOM_EPSILON) {
+        detach(state);
+      } else if (dist <= BOTTOM_EPSILON) {
+        const movedDown = curTop > state.lastScrollTop + 1;
+        const recentDownInput =
+          performance.now() - state.lastDownwardInputAt <= DOWNWARD_INPUT_WINDOW_MS;
+        if (movedDown && (recentDownInput || state.scrollbarDragging)) {
+          state.followingBottom = true;
+        }
+      }
+      state.lastScrollTop = curTop;
+      state.lastScrollHeight = curHeight;
+      state.lastClientHeight = curClient;
+    };
+
+    el.addEventListener?.("wheel", onWheel, { capture: true, passive: true });
+    el.addEventListener?.("keydown", onKeyDown, { capture: true, passive: true });
+    el.addEventListener?.("touchstart", onTouchStart, { capture: true, passive: true });
+    el.addEventListener?.("touchmove", onTouchMove, { capture: true, passive: true });
+    el.addEventListener?.("touchend", onTouchEnd, { capture: true, passive: true });
+    el.addEventListener?.("touchcancel", onTouchEnd, { capture: true, passive: true });
+    el.addEventListener?.("scroll", onScroll, { capture: true, passive: true });
+
+    state.cleanup = () => {
+      el.removeEventListener?.("wheel", onWheel, { capture: true, passive: true });
+      el.removeEventListener?.("keydown", onKeyDown, { capture: true, passive: true });
+      el.removeEventListener?.("touchstart", onTouchStart, { capture: true, passive: true });
+      el.removeEventListener?.("touchmove", onTouchMove, { capture: true, passive: true });
+      el.removeEventListener?.("touchend", onTouchEnd, { capture: true, passive: true });
+      el.removeEventListener?.("touchcancel", onTouchEnd, { capture: true, passive: true });
+      el.removeEventListener?.("scroll", onScroll, { capture: true, passive: true });
+      if (typeof origScrollTo === "function") {
+        if (hadOwnScrollTo) {
+          el.scrollTo = origScrollTo;
+        } else {
+          delete (el as { scrollTo?: unknown }).scrollTo;
+        }
+      }
+    };
+
+    guards.set(el, state);
+  };
+
+  const scan = () => {
+    for (const [el, state] of Array.from(guards.entries())) {
+      if (!el.isConnected) {
+        state.cleanup();
+        guards.delete(el);
+      }
+    }
+    for (const el of document.querySelectorAll(CHAT_SCROLL_SELECTOR)) {
+      attach(el);
+    }
+  };
+
+  const findGuardForNode = (node: DomElement | null): GuardState | null => {
+    if (!node) return null;
+    const direct = node.closest(CHAT_SCROLL_SELECTOR);
+    if (direct && guards.has(direct)) return guards.get(direct) ?? null;
+    let cur: DomElement | null = node.parentElement;
+    for (let depth = 0; cur && cur !== document.body && depth < 6; depth++) {
+      for (const candidate of cur.querySelectorAll(CHAT_SCROLL_SELECTOR)) {
+        const state = guards.get(candidate);
+        if (!state) continue;
+        const rect = candidate.getBoundingClientRect();
+        if (rect.width > 0 && rect.height > 0) return state;
+      }
+      cur = cur.parentElement;
+    }
+    return null;
+  };
+
+  const markScrollJumpFromTarget = (target: DomNode | null | undefined, allowScrollbarDrag: boolean) => {
+    if (!target || target.nodeType !== 1) return;
+    const el = target as DomElement;
+    const jumpBtn = el.closest('[data-testid="scroll-to-bottom-button"]');
+    if (jumpBtn) {
+      const targetGuard = findGuardForNode(jumpBtn);
+      const targets = targetGuard ? [targetGuard] : Array.from(guards.values());
+      const until = performance.now() + EXPLICIT_JUMP_MS;
+      for (const state of targets) {
+        state.followingBottom = true;
+        state.explicitJumpUntil = until;
+      }
+      return;
+    }
+    if (allowScrollbarDrag) {
+      const grab = el.closest('[data-testid="workspace-overlay-scrollbar-grab"]');
+      if (grab) {
+        const targetGuard = findGuardForNode(grab);
+        if (targetGuard) targetGuard.scrollbarDragging = true;
+        return;
+      }
+    }
+    const disclosure = el.closest(CHAT_DISCLOSURE_SELECTOR);
+    if (disclosure) {
+      const scrollEl = disclosure.closest(CHAT_SCROLL_SELECTOR);
+      const state = scrollEl ? guards.get(scrollEl) : null;
+      if (state) detach(state);
+    }
+  };
+
+  const onGlobalPointerDown = (rawEvent: unknown) => {
+    const target = (rawEvent as { target?: DomNode | null })?.target;
+    markScrollJumpFromTarget(target, true);
+  };
+
+  const onGlobalClick = (rawEvent: unknown) => {
+    const target = (rawEvent as { target?: DomNode | null })?.target;
+    markScrollJumpFromTarget(target, false);
+  };
+
+  const onGlobalKeyDown = (rawEvent: unknown) => {
+    const ev = rawEvent as { key?: string; target?: DomNode | null };
+    if (ev.key === "Enter" || ev.key === " ") {
+      markScrollJumpFromTarget(ev.target, false);
+    }
+  };
+
+  const endScrollbarDrag = () => {
+    for (const state of guards.values()) {
+      state.scrollbarDragging = false;
+    }
+  };
+
+  window.addEventListener("pointerdown", onGlobalPointerDown, true);
+  window.addEventListener("click", onGlobalClick, true);
+  window.addEventListener("keydown", onGlobalKeyDown, true);
+  window.addEventListener("pointerup", endScrollbarDrag, true);
+  window.addEventListener("pointercancel", endScrollbarDrag, true);
+  window.addEventListener("blur", endScrollbarDrag);
+
+  let frame = 0;
+  const schedule = () => {
+    if (!frame) {
+      frame = window.requestAnimationFrame(() => {
+        frame = 0;
+        scan();
+      });
+    }
+  };
+
+  scan();
+  const observer = new MutationObserver(() => schedule());
+  observer.observe(document.body, { childList: true, subtree: true });
+
+  return () => {
+    if (frame) window.cancelAnimationFrame(frame);
+    observer.disconnect();
+    window.removeEventListener("pointerdown", onGlobalPointerDown, true);
+    window.removeEventListener("click", onGlobalClick, true);
+    window.removeEventListener("keydown", onGlobalKeyDown, true);
+    window.removeEventListener("pointerup", endScrollbarDrag, true);
+    window.removeEventListener("pointercancel", endScrollbarDrag, true);
+    window.removeEventListener("blur", endScrollbarDrag);
+    for (const state of guards.values()) state.cleanup();
+    guards.clear();
+  };
+}
+
 function mountFanframeMotion(): () => void {
   if (Platform.OS !== "web") return () => {};
   const reducedMotion = () =>
@@ -1591,30 +2104,111 @@ function mountFanframeMotion(): () => void {
   const CARD_SELECTOR = '[data-fan-inline-viz],[data-fan-media-preview],details > :not(summary)';
   const TRIGGER_SELECTOR =
     'button,[role="button"],[tabindex="0"],[data-testid="tool-call-badge"],[data-testid="tool-call-group"],[data-testid="turn-summary"],summary';
+  const IDENTITY_ATTRS = [
+    "id",
+    "data-testid",
+    "data-history-row-id",
+    "data-message-id",
+    "data-index",
+    "data-ff-square-spinner",
+    "data-ff-square-arc",
+  ] as const;
+  const IDENTITY_SELECTOR = IDENTITY_ATTRS.map((a) => `[${a}]`).join(",");
+
+  interface ClickScopeMeta {
+    ts: number;
+    triggerTop: number;
+    triggerBottom: number;
+    inChatScroll: boolean;
+    scrollEl: DomElement | null;
+    preScrollTop: number;
+  }
+
+  interface PreCollapseRect {
+    top: number;
+    height: number;
+  }
+
   const animated = new WeakSet<DomElement>();
-  const recentClickScopes = new Map<DomElement, number>();
-  const preCollapseHeights = new WeakMap<DomElement, number>();
-  const activeGhosts = new Set<DomElement>();
+  const recentClickScopes = new Map<DomElement, ClickScopeMeta>();
+  const preCollapseRects = new WeakMap<DomElement, PreCollapseRect>();
+  const activeDrawers = new Set<{ el: DomElement; cleanup: () => void }>();
+
+  const isInsideChatScroll = (el: DomElement | null): boolean =>
+    Boolean(el?.closest(CHAT_SCROLL_SELECTOR));
+
+  const isSyntheticGhost = (el: DomElement): boolean =>
+    el.getAttribute("data-ff-collapse-ghost") === "true" ||
+    el.getAttribute("data-ff-collapse-drawer") === "true";
+
+  const clearActiveDrawersIn = (container: DomElement | null) => {
+    for (const entry of Array.from(activeDrawers)) {
+      if (!container || !entry.el.isConnected || container.contains?.(entry.el)) {
+        entry.cleanup();
+      }
+    }
+  };
+
+  const stripCloneIdentity = (root: DomElement) => {
+    for (const attr of IDENTITY_ATTRS) root.removeAttribute(attr);
+    for (const desc of root.querySelectorAll(IDENTITY_SELECTOR)) {
+      for (const attr of IDENTITY_ATTRS) desc.removeAttribute(attr);
+    }
+  };
+
+  const cancelForeignAnimations = (el: DomElement) => {
+    const anims = el.getAnimations?.();
+    if (!anims) return;
+    for (const anim of anims) {
+      try {
+        anim.cancel();
+      } catch {
+        // Ignore already-finished animations.
+      }
+    }
+  };
 
   const recordScopeFromTarget = (target: DomNode | null | undefined) => {
     if (!target || target.nodeType !== 1) return;
     const trigger = (target as DomElement).closest(TRIGGER_SELECTOR);
     if (!trigger) return;
     const now = performance.now();
-    // Record ancestors up to 5 levels so React Native Web wrapper divs are covered
-    // BEFORE React commits the expand/collapse DOM mutation.
+    const scrollEl = trigger.closest(CHAT_SCROLL_SELECTOR);
+    const inChatScroll = Boolean(scrollEl);
+    const triggerRect = trigger.getBoundingClientRect();
+    const isRowLevelDisclosure = Boolean(trigger.closest(CHAT_ROW_DISCLOSURE_SELECTOR));
+    const triggerRow = inChatScroll ? trigger.closest("[data-history-row-id]") : null;
+    const chatListContainer = isRowLevelDisclosure ? triggerRow?.parentElement ?? null : null;
+
+    // Clear any in-flight collapse drawer in this area before starting a new toggle.
+    clearActiveDrawersIn(chatListContainer ?? triggerRow ?? trigger.parentElement);
+
+    const meta: ClickScopeMeta = {
+      ts: now,
+      triggerTop: triggerRect.top,
+      triggerBottom: triggerRect.bottom,
+      inChatScroll,
+      scrollEl,
+      preScrollTop: scrollEl ? scrollEl.scrollTop : 0,
+    };
+
     let scope = trigger.parentElement;
     for (let depth = 0; scope && scope !== document.body && depth < 5; depth++) {
-      recentClickScopes.set(scope, now);
+      if (scope.matches(CHAT_SCROLL_SELECTOR)) break;
+      recentClickScopes.set(scope, meta);
       if (scope.children) {
         for (const child of scope.children) {
           if (child === trigger || child.contains?.(trigger)) continue;
-          if (child.getAttribute("data-ff-collapse-ghost") === "true") continue;
+          if (isSyntheticGhost(child)) continue;
           const r = child.getBoundingClientRect();
-          if (r.height >= 16 && r.height <= 900) {
-            preCollapseHeights.set(child, Math.round(r.height));
+          if (r.height >= 12 && r.height <= 1600) {
+            preCollapseRects.set(child, { top: r.top, height: Math.round(r.height) });
           }
         }
+      }
+      if (inChatScroll) {
+        if (isRowLevelDisclosure && scope === chatListContainer) break;
+        if (!isRowLevelDisclosure && scope === triggerRow) break;
       }
       scope = scope.parentElement;
     }
@@ -1632,43 +2226,43 @@ function mountFanframeMotion(): () => void {
     }
   };
 
-  // Use CAPTURE phase on pointerdown/keydown so scopes & pre-collapse heights are recorded
-  // BEFORE React Native Web's Pressable handles the press and mutates the DOM.
   window.addEventListener("pointerdown", onPointerDown, true);
   window.addEventListener("keydown", onKeyDown, true);
 
-  const isInRecentClickScope = (el: DomElement | null): boolean => {
-    if (!el) return false;
+  const findRecentClickScope = (el: DomElement | null): ClickScopeMeta | null => {
+    if (!el) return null;
     const now = performance.now();
-    for (const [scope, ts] of recentClickScopes) {
-      if (now - ts > 420 || !scope.isConnected) {
+    for (const [scope, meta] of recentClickScopes) {
+      if (now - meta.ts > 420 || !scope.isConnected) {
         recentClickScopes.delete(scope);
       }
     }
     let cur: DomElement | null = el;
     for (let depth = 0; cur && cur !== document.body && depth < 5; depth++) {
-      if (recentClickScopes.has(cur)) return true;
+      const meta = recentClickScopes.get(cur);
+      if (meta) return meta;
+      if (cur.matches(CHAT_SCROLL_SELECTOR)) break;
       cur = cur.parentElement;
     }
-    return false;
+    return null;
   };
 
   const playFade = (el: DomElement, duration: number, liftPx: number) => {
     if (reducedMotion() || animated.has(el) || typeof el.animate !== "function") return;
     animated.add(el);
     const keyframes =
-      liftPx > 0
+      liftPx !== 0
         ? [
             { opacity: 0, transform: `translateY(${liftPx}px)` },
             { opacity: 1, transform: "translateY(0px)" },
           ]
         : [{ opacity: 0 }, { opacity: 1 }];
-    el.animate(keyframes, { duration, easing: "ease" });
+    el.animate(keyframes, { duration, easing: "cubic-bezier(0.2, 0.8, 0.2, 1)" });
   };
 
-  const playDisclosureExpand = (el: DomElement) => {
+  const playOutsideDisclosureExpand = (el: DomElement) => {
     if (reducedMotion() || animated.has(el) || typeof el.animate !== "function") return;
-    if (el.getAttribute("data-ff-collapse-ghost") === "true") return;
+    if (isSyntheticGhost(el)) return;
     if (el.closest('[role="dialog"],[role="menu"],[role="listbox"]')) return;
     const rect = el.getBoundingClientRect();
     if (rect.height < 14 || rect.height > 1200) return;
@@ -1682,80 +2276,295 @@ function mountFanframeMotion(): () => void {
     );
   };
 
-  const playDisclosureCollapse = (
+  const playChatExpandBatch = (
     parent: DomElement,
-    removed: DomElement,
-    nextSibling: DomNode | null,
+    addedEls: DomElement[],
+    meta: ClickScopeMeta,
   ) => {
-    if (reducedMotion() || typeof removed.cloneNode !== "function" || typeof parent.insertBefore !== "function") {
-      return;
-    }
-    if (removed.getAttribute("data-ff-collapse-ghost") === "true") return;
+    if (reducedMotion() || addedEls.length === 0) return;
     if (parent.closest('[role="dialog"],[role="menu"],[role="listbox"]')) return;
-    const height = preCollapseHeights.get(removed);
-    if (!height || height < 16 || height > 900) return;
-    preCollapseHeights.delete(removed);
 
-    const ghost = removed.cloneNode(true);
-    ghost.setAttribute("data-ff-collapse-ghost", "true");
-    ghost.setAttribute("aria-hidden", "true");
-    ghost.style.setProperty("pointer-events", "none");
-    ghost.style.setProperty("overflow", "hidden");
-    const refNode = nextSibling && nextSibling.parentElement === parent ? nextSibling : null;
-    parent.insertBefore(ghost, refNode);
-    activeGhosts.add(ghost);
+    // Defer by one microtask (still strictly before browser paint) so any competing legacy
+    // height:0 animation from an un-updated remote host can be cancelled cleanly first.
+    void Promise.resolve().then(() => {
+      if (reducedMotion() || !parent.isConnected) return;
+      const connected = addedEls.filter(
+        (el) => el.isConnected && !animated.has(el) && !isSyntheticGhost(el),
+      );
+      if (connected.length === 0) return;
 
-    const cleanup = () => {
-      activeGhosts.delete(ghost);
-      ghost.remove();
-    };
-    const anim = ghost.animate?.(
-      [
-        { opacity: 1, height: `${height}px`, overflow: "hidden" },
-        { opacity: 0, height: "0px", overflow: "hidden" },
-      ],
-      { duration: 160, easing: "cubic-bezier(0.4, 0, 0.2, 1)", fill: "forwards" },
-    );
-    if (anim) {
-      anim.onfinish = cleanup;
-      anim.oncancel = cleanup;
-    } else {
-      cleanup();
-    }
+      for (const el of connected) cancelForeignAnimations(el);
+
+      const scrollRect = meta.scrollEl?.getBoundingClientRect() ?? null;
+      const visible: Array<{ el: DomElement; height: number }> = [];
+      let totalAddedHeight = 0;
+
+      for (const el of connected) {
+        const rect = el.getBoundingClientRect();
+        if (rect.height < 10) continue;
+        totalAddedHeight += rect.height;
+        const inView =
+          !scrollRect ||
+          (rect.bottom >= scrollRect.top - 40 && rect.top <= scrollRect.bottom + 80);
+        if (inView && visible.length < 18) {
+          visible.push({ el, height: rect.height });
+        }
+      }
+
+      if (visible.length === 0) return;
+
+      // Pure GPU compositor reveal: zero height mutation, zero ResizeObserver churn, zero hitch.
+      const duration = 180;
+      const easing = "cubic-bezier(0.2, 0.8, 0.2, 1)";
+      for (const { el } of visible) {
+        animated.add(el);
+        el.animate?.(
+          [
+            { opacity: 0, transform: "translateY(-8px)" },
+            { opacity: 1, transform: "translateY(0px)" },
+          ],
+          { duration, easing },
+        );
+      }
+
+      // GPU FLIP slide on the immediate surviving sibling below so the list glides open smoothly.
+      const lastAdded = connected[connected.length - 1];
+      const slidePx = Math.min(Math.round(totalAddedHeight), 96);
+      if (lastAdded && slidePx >= 16) {
+        let nextNode = lastAdded.nextSibling;
+        let slid = 0;
+        while (nextNode && slid < 2) {
+          if (nextNode.nodeType === 1) {
+            const sib = nextNode as DomElement;
+            if (!isSyntheticGhost(sib) && typeof sib.animate === "function") {
+              const sr = sib.getBoundingClientRect();
+              const sibInView =
+                !scrollRect || (sr.bottom >= scrollRect.top - 20 && sr.top <= scrollRect.bottom + 120);
+              if (sibInView && sr.height > 0) {
+                cancelForeignAnimations(sib);
+                sib.animate(
+                  [
+                    { transform: `translateY(${-slidePx}px)` },
+                    { transform: "translateY(0px)" },
+                  ],
+                  { duration, easing },
+                );
+                slid += 1;
+              }
+            }
+          }
+          nextNode = nextNode.nextSibling;
+        }
+      }
+    });
   };
 
-  const inspectAdded = (node: DomNode) => {
-    if (node.nodeType !== 1) return;
-    const el = node as DomElement;
-    if (el.getAttribute("data-ff-collapse-ghost") === "true") return;
-    if (el.matches(CARD_SELECTOR)) {
-      playFade(el, 180, 4);
+  const playCollapseBatch = (
+    parent: DomElement,
+    removedEntries: Array<{
+      el: DomElement;
+      prevSibling: DomNode | null;
+      nextSibling: DomNode | null;
+    }>,
+    meta: ClickScopeMeta,
+  ) => {
+    if (reducedMotion() || removedEntries.length === 0 || typeof parent.insertBefore !== "function") {
       return;
     }
-    if (isInRecentClickScope(el.parentElement)) {
-      playDisclosureExpand(el);
-      return;
+    if (parent.closest('[role="dialog"],[role="menu"],[role="listbox"]')) return;
+
+    // Keep only removed nodes that had measured height and sat below/inside the clicked trigger
+    // (collapsing nodes strictly above the trigger would shift the trigger upward).
+    const candidates: Array<{
+      el: DomElement;
+      rect: PreCollapseRect;
+      prevSibling: DomNode | null;
+      nextSibling: DomNode | null;
+    }> = [];
+    for (const entry of removedEntries) {
+      if (isSyntheticGhost(entry.el)) continue;
+      if (typeof entry.el.cloneNode !== "function") continue;
+      const rect = preCollapseRects.get(entry.el);
+      if (!rect || rect.height < 12) continue;
+      preCollapseRects.delete(entry.el);
+      if (meta.inChatScroll && rect.top < meta.triggerTop - 4) continue;
+      candidates.push({ ...entry, rect });
     }
-    for (const card of el.querySelectorAll(CARD_SELECTOR)) {
-      playFade(card, 180, 4);
+    if (candidates.length === 0) return;
+
+    // Resolve the exact surviving anchor in `parent`; never blindly append to the end of a list.
+    let refNode: DomNode | null = null;
+    let resolvedAnchor = false;
+    for (let i = candidates.length - 1; i >= 0; i--) {
+      const next = candidates[i]!.nextSibling;
+      if (next && next.parentElement === parent) {
+        refNode = next;
+        resolvedAnchor = true;
+        break;
+      }
+    }
+    if (!resolvedAnchor) {
+      for (let i = 0; i < candidates.length; i++) {
+        const prev = candidates[i]!.prevSibling;
+        if (prev && prev.parentElement === parent) {
+          refNode = prev.nextSibling;
+          resolvedAnchor = true;
+          break;
+        }
+      }
+    }
+    if (!resolvedAnchor) {
+      const hasRemainingChildren = Boolean(parent.firstChild);
+      if (hasRemainingChildren) return;
+      refNode = null;
+    }
+
+    const totalHeight = candidates.reduce((sum, c) => sum + c.rect.height, 0);
+    if (totalHeight < 14) return;
+
+    // Cap visual collapse height to the visible area below the trigger (+60px) so the entire
+    // easing curve is visible inside the viewport without over-animating offscreen rows.
+    let maxVisualHeight = 480;
+    if (meta.scrollEl) {
+      const scrollRect = meta.scrollEl.getBoundingClientRect();
+      const visibleBelow = Math.max(0, Math.round(scrollRect.bottom - meta.triggerBottom));
+      maxVisualHeight = Math.min(480, Math.max(160, visibleBelow + 60));
+    }
+    const visualHeight = Math.min(totalHeight, maxVisualHeight);
+
+    const drawer = document.createElement("div");
+    drawer.setAttribute("data-ff-collapse-drawer", "true");
+    // Also mark with data-ff-collapse-ghost so any legacy remote-host bundle skips animating it.
+    drawer.setAttribute("data-ff-collapse-ghost", "true");
+    drawer.setAttribute("aria-hidden", "true");
+    drawer.style.setProperty("pointer-events", "none");
+    drawer.style.setProperty("overflow", "hidden");
+    drawer.style.setProperty("width", "100%");
+    drawer.style.setProperty("flex-shrink", "0");
+    drawer.style.setProperty("box-sizing", "border-box");
+
+    let clonedHeight = 0;
+    for (const c of candidates) {
+      if (clonedHeight >= visualHeight + 120) break;
+      const clone = c.el.cloneNode!(true);
+      stripCloneIdentity(clone);
+      drawer.appendChild(clone);
+      clonedHeight += c.rect.height;
+    }
+
+    parent.insertBefore(drawer, refNode);
+
+    // If removing the rows caused the browser to clamp scrollTop downward before paint,
+    // restore preScrollTop while the drawer is at full visualHeight so collapse glides smoothly.
+    if (meta.scrollEl && meta.scrollEl.scrollTop < meta.preScrollTop - 1) {
+      const maxNow = Math.max(0, meta.scrollEl.scrollHeight - meta.scrollEl.clientHeight);
+      const restoreTop = Math.min(meta.preScrollTop, maxNow);
+      if (restoreTop > meta.scrollEl.scrollTop + 1) {
+        meta.scrollEl.scrollTop = restoreTop;
+      }
+    }
+
+    let cleaned = false;
+    let fallbackTimer = 0;
+    const entry = {
+      el: drawer,
+      cleanup: () => {
+        if (cleaned) return;
+        cleaned = true;
+        if (fallbackTimer) {
+          window.clearTimeout(fallbackTimer);
+          fallbackTimer = 0;
+        }
+        activeDrawers.delete(entry);
+        drawer.remove();
+      },
+    };
+    activeDrawers.add(entry);
+
+    const duration = 170;
+    const anim = drawer.animate?.(
+      [
+        { opacity: 1, height: `${visualHeight}px`, overflow: "hidden" },
+        { opacity: 0, height: "0px", overflow: "hidden" },
+      ],
+      { duration, easing: "cubic-bezier(0.32, 0.72, 0, 1)", fill: "forwards" },
+    );
+    if (anim) {
+      anim.onfinish = entry.cleanup;
+      anim.oncancel = entry.cleanup;
+      fallbackTimer = window.setTimeout(entry.cleanup, duration + 140);
+    } else {
+      entry.cleanup();
     }
   };
 
   const observer = new MutationObserver((records) => {
     if (reducedMotion()) return;
+
+    const chatAddedByParent = new Map<DomElement, { els: DomElement[]; meta: ClickScopeMeta }>();
+    const removedByParent = new Map<
+      DomElement,
+      {
+        entries: Array<{ el: DomElement; prevSibling: DomNode | null; nextSibling: DomNode | null }>;
+        meta: ClickScopeMeta;
+      }
+    >();
+
     for (const record of records) {
       if (record.type !== "childList") continue;
       const parentEl = record.target.nodeType === 1 ? (record.target as DomElement) : null;
+      const scopeMeta = parentEl ? findRecentClickScope(parentEl) : null;
+
       for (const added of record.addedNodes) {
-        inspectAdded(added);
-      }
-      if (parentEl && isInRecentClickScope(parentEl)) {
-        for (const removed of record.removedNodes) {
-          if (removed.nodeType === 1) {
-            playDisclosureCollapse(parentEl, removed as DomElement, record.nextSibling);
+        if (added.nodeType !== 1) continue;
+        const el = added as DomElement;
+        if (isSyntheticGhost(el)) continue;
+        if (el.matches(CARD_SELECTOR)) {
+          playFade(el, 180, 4);
+          continue;
+        }
+        if (parentEl && scopeMeta) {
+          if (scopeMeta.inChatScroll || isInsideChatScroll(el)) {
+            let group = chatAddedByParent.get(parentEl);
+            if (!group) {
+              group = { els: [], meta: scopeMeta };
+              chatAddedByParent.set(parentEl, group);
+            }
+            group.els.push(el);
+          } else {
+            playOutsideDisclosureExpand(el);
           }
+          continue;
+        }
+        for (const card of el.querySelectorAll(CARD_SELECTOR)) {
+          playFade(card, 180, 4);
         }
       }
+
+      if (parentEl && scopeMeta) {
+        for (const removed of record.removedNodes) {
+          if (removed.nodeType !== 1) continue;
+          const el = removed as DomElement;
+          if (isSyntheticGhost(el)) continue;
+          let group = removedByParent.get(parentEl);
+          if (!group) {
+            group = { entries: [], meta: scopeMeta };
+            removedByParent.set(parentEl, group);
+          }
+          group.entries.push({
+            el,
+            prevSibling: record.previousSibling,
+            nextSibling: record.nextSibling,
+          });
+        }
+      }
+    }
+
+    for (const [parentEl, { els, meta }] of chatAddedByParent) {
+      playChatExpandBatch(parentEl, els, meta);
+    }
+    for (const [parentEl, { entries, meta }] of removedByParent) {
+      playCollapseBatch(parentEl, entries, meta);
     }
   });
 
@@ -1763,8 +2572,7 @@ function mountFanframeMotion(): () => void {
   return () => {
     window.removeEventListener("pointerdown", onPointerDown, true);
     window.removeEventListener("keydown", onKeyDown, true);
-    for (const ghost of activeGhosts) ghost.remove();
-    activeGhosts.clear();
+    clearActiveDrawersIn(null);
     recentClickScopes.clear();
     observer.disconnect();
   };
@@ -2006,8 +2814,6 @@ interface DomMediaElement extends DomElement {
   play(): Promise<void> | void;
   pause(): void;
   requestFullscreen?: () => Promise<void> | void;
-  addEventListener(type: string, listener: () => void): void;
-  removeEventListener(type: string, listener: () => void): void;
 }
 
 interface DomPointerTarget extends DomElement {
@@ -2579,6 +3385,155 @@ export async function resolveCrossImagePreviewUri(
   return task;
 }
 
+export interface PreparedWebFile {
+  name: string;
+  mimeType: string;
+  kind: CrossFileKind;
+  width: number;
+  height: number;
+  bytes: Uint8Array;
+  originalSize: number;
+  compressedSize: number;
+  previewUrl: string | null;
+}
+
+function inferFallbackMime(name: string): string {
+  const lower = name.toLowerCase();
+  if (lower.endsWith(".pdf")) return "application/pdf";
+  if (lower.endsWith(".json")) return "application/json";
+  if (lower.endsWith(".md") || lower.endsWith(".markdown")) return "text/markdown";
+  if (lower.endsWith(".txt") || lower.endsWith(".log")) return "text/plain";
+  if (lower.endsWith(".csv")) return "text/csv";
+  if (lower.endsWith(".html") || lower.endsWith(".htm")) return "text/html";
+  if (lower.endsWith(".xml")) return "application/xml";
+  if (lower.endsWith(".zip")) return "application/zip";
+  if (lower.endsWith(".mp3")) return "audio/mpeg";
+  if (lower.endsWith(".wav")) return "audio/wav";
+  if (lower.endsWith(".ogg")) return "audio/ogg";
+  if (lower.endsWith(".m4a")) return "audio/mp4";
+  if (lower.endsWith(".flac")) return "audio/flac";
+  if (lower.endsWith(".mp4") || lower.endsWith(".m4v")) return "video/mp4";
+  if (lower.endsWith(".webm")) return "video/webm";
+  if (lower.endsWith(".mov")) return "video/quicktime";
+  if (lower.endsWith(".svg")) return "image/svg+xml";
+  return "application/octet-stream";
+}
+
+export async function prepareCrossFile(
+  rawFile: unknown,
+  options: { keepOriginal: boolean },
+): Promise<PreparedWebFile> {
+  if (Platform.OS !== "web") {
+    throw new Error("当前运行环境不支持浏览器文件处理。");
+  }
+  const file = rawFile as DomWebFile | null;
+  if (!file || typeof file.arrayBuffer !== "function") {
+    throw new Error("无效的文件对象。");
+  }
+  if (file.size <= 0) {
+    throw new Error("文件为空，无法发送。");
+  }
+  if (file.size > MAX_CROSS_FILE_BYTES) {
+    throw new Error("单个文件不能超过 50 MiB。");
+  }
+
+  const imageMime = normalizeImageMime(file.type, file.name);
+  if (imageMime && file.size <= MAX_RAW_CROSS_IMAGE_BYTES) {
+    try {
+      const preparedImg = await prepareCrossImageFile(rawFile, options);
+      return {
+        ...preparedImg,
+        kind: "image",
+      };
+    } catch {
+      // Fall back to raw file upload if canvas/image decode fails.
+    }
+  }
+
+  const rawBytes = new Uint8Array(await file.arrayBuffer());
+  const rawName = (file.name ?? "").trim() || "file";
+  const mimeType = (file.type ?? "").trim() || inferFallbackMime(rawName);
+  const kind = inferCrossFileKind(mimeType, rawName);
+
+  return {
+    name: rawName,
+    mimeType,
+    kind,
+    width: 0,
+    height: 0,
+    bytes: rawBytes,
+    originalSize: rawBytes.byteLength,
+    compressedSize: rawBytes.byteLength,
+    previewUrl: null,
+  };
+}
+
+export function packCrossFileChunkPacket(
+  header: { uploadId: string; chunkIndex: number },
+  chunkBytes: Uint8Array,
+): Uint8Array {
+  const headerBytes = new TextEncoder().encode(JSON.stringify(header));
+  const out = new Uint8Array(4 + headerBytes.byteLength + chunkBytes.byteLength);
+  new DataView(out.buffer).setUint32(0, headerBytes.byteLength, false);
+  out.set(headerBytes, 4);
+  out.set(chunkBytes, 4 + headerBytes.byteLength);
+  return out;
+}
+
+export function downloadWebFileBytes(bytes: Uint8Array, mimeType: string, fileName: string): void {
+  if (Platform.OS !== "web") return;
+  const blobUrl = URL.createObjectURL(new Blob([bytes], { type: mimeType || "application/octet-stream" }));
+  const a = document.createElement("a") as unknown as DomAnchorElement;
+  a.href = blobUrl;
+  a.download = fileName || "download";
+  a.style.setProperty("display", "none");
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  window.setTimeout(() => revokeWebPreviewUrl(blobUrl), 1500);
+}
+
+export async function copyWebText(text: string): Promise<boolean> {
+  if (Platform.OS !== "web" || !text) return false;
+  try {
+    if (navigator?.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text);
+      return true;
+    }
+  } catch {
+    // Ignore clipboard rejection.
+  }
+  return false;
+}
+
+export function openWebFilePicker(onFiles: (files: unknown[]) => void): () => void {
+  if (Platform.OS !== "web") return () => {};
+  const input = document.createElement("input") as unknown as DomInputElement;
+  input.type = "file";
+  input.multiple = true;
+
+  let cleaned = false;
+  const cleanup = () => {
+    if (cleaned) return;
+    cleaned = true;
+    input.removeEventListener("change", onChange);
+    input.removeEventListener("cancel", cleanup);
+    input.remove();
+  };
+  const onChange = () => {
+    const selected = input.files ? Array.from(input.files) : [];
+    cleanup();
+    if (selected.length > 0) onFiles(selected);
+  };
+
+  input.addEventListener("change", onChange, { once: true });
+  input.addEventListener("cancel", cleanup, { once: true });
+  input.style.setProperty("display", "none");
+  document.body.appendChild(input);
+  input.click();
+  return cleanup;
+}
+
 export function openWebImagePicker(onFiles: (files: unknown[]) => void): () => void {
   if (Platform.OS !== "web") return () => {};
   const input = document.createElement("input") as unknown as DomInputElement;
@@ -2623,7 +3578,7 @@ export function attachWebPasteAndDrop(
 
   let dragDepth = 0;
 
-  const extractClipboardImages = (rawEvent: unknown): DomWebFile[] => {
+  const extractClipboardFiles = (rawEvent: unknown): DomWebFile[] => {
     const cd = (rawEvent as {
       clipboardData?: {
         files?: ArrayLike<DomWebFile>;
@@ -2637,24 +3592,24 @@ export function attachWebPasteAndDrop(
         const item = cd.items[i];
         if (item?.kind === "file" && typeof item.getAsFile === "function") {
           const f = item.getAsFile();
-          if (f && (!f.type || f.type.startsWith("image/"))) out.push(f);
+          if (f) out.push(f);
         }
       }
     }
     if (out.length === 0 && cd.files) {
       for (let i = 0; i < cd.files.length; i++) {
         const f = cd.files[i];
-        if (f && (!f.type || f.type.startsWith("image/"))) out.push(f);
+        if (f) out.push(f);
       }
     }
     return out;
   };
 
   const onPaste = (rawEvent: unknown) => {
-    const imgs = extractClipboardImages(rawEvent);
-    if (imgs.length === 0) return;
+    const files = extractClipboardFiles(rawEvent);
+    if (files.length === 0) return;
     (rawEvent as { preventDefault?: () => void }).preventDefault?.();
-    callbacks.onFiles(imgs);
+    callbacks.onFiles(files);
   };
 
   const hasFileTransfer = (rawEvent: unknown): boolean => {

@@ -276,7 +276,7 @@ export function FanframeSettings({ theme, layout }: PluginSurfaceProps) {
             }}
           />
           <SettingsSwitch
-            label="对话框「传图」按钮（默认前端压缩，发送后桌面与手机端均可见）"
+            label="对话框「传文件」按钮（支持图片压缩与任意文件，发送后桌面与手机端均可见）"
             value={prefs.crossImagePill}
             disabled={!isWeb}
             onValueChange={(value) => {

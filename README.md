@@ -46,7 +46,7 @@
 ### ⚡ Interaction & Cross-Host Media · 交互与跨主机媒体
 - **Interactive Question Cards** — Automatically upgrades plain-text `[1] / [2]` option prompts (e.g. Antigravity over ACP) into clickable multi-step cards with auto-advance, one-tap recommended selection, custom notes, and automatic collapse once answered.
 - **Host-Scoped Inline Media & Custom Player** — Renders ` ```fanframe-media ` blocks across **both local and remote hosts**, featuring layout-preserving loading skeletons with animated progress bars, lightbox image zoom, expandable PDF/text previews, and a custom sharp-cornered audio/video player (play/pause, drag scrubber, mute, fullscreen, download).
-- **Cross-Device Compressed Image Upload** — Adds a composer `传图` pill with client-side compression (or optional original quality), storing shared copies on the host so uploaded images stay visible across desktop and mobile clients.
+- **Cross-Device File Transfer (`传文件`)** — Adds a composer `传文件` pill supporting images (auto-compressed to ≤1600px by default, with an original-quality toggle) and arbitrary files up to 50 MiB via chunked upload/download, forwarding native attachments to the active agent and rendering synchronized preview/download cards across desktop and mobile clients.
 
 ---
 
@@ -66,7 +66,7 @@ FanFrame equips every agent session with the built-in **`fanframe_visualize`** t
 FanFrame replaces abrupt UI snapping with a calm, sharp-edged motion language designed to stay unobtrusive during long sessions:
 
 - **Interactive Micro-Transitions** — 140ms–180ms `cubic-bezier` transitions on background, ink, border, opacity, and icon states across buttons, tabs, switches, menus, and tool-call badges.
-- **Fluid Expand & Collapse Disclosures** — Smooth height + fade transitions on both expansion (`200ms`) and collapse (`160ms` via lightweight ghost snapshots), so collapsible tool panels and sections glide open and shut instead of popping.
+- **Fluid Expand & Collapse Disclosures** — Layout-neutral GPU FLIP expand transitions (`180ms`) and single-drawer anchored collapse (`170ms`) keep collapsible AI details and tool panels smooth without scroll jumps, paired with a bottom-only auto-scroll guard that immediately yields when you scroll up during streaming.
 - **Square-Perimeter Orbit Spinner** — Transforms rounded spinning borders into a crisp 0px square-orbit conic-gradient progress ring (`900ms`) that fits FanFrame's angular aesthetic, while removing redundant overlapping tab spinners.
 - **Animated Loading Sweep Bars** — Pre-sized skeletons for images, audio/video players, documents, and visualization cards carry a 2px accent sweep bar so remote assets settle into place without sudden layout jumps.
 - **Reduced-Motion Friendly** — Automatically honors `prefers-reduced-motion: reduce`, disabling orbit and disclosure motion cleanly when requested by the OS.
@@ -105,7 +105,7 @@ Every enhancement can be toggled independently in **Settings → Plugins → Fan
 | **Low-Saturation Markdown Palette** | On | Adaptive dark/light syntax colors for Markdown elements |
 | **3-Tier Prose Brightness Layering** | On | Clause-level OKLab luminance rhythm + bracket/number accents |
 | **Restrained Micro-Motion** | On | Smooth color & disclosure transitions (`prefers-reduced-motion` aware) |
-| **Cross-Device Image Pill (`传图`)** | On | Compressed image upload button in the composer track bar |
+| **Cross-Device File Pill (`传文件`)** | On | Chunked file & compressed image upload button in the composer track bar |
 | **3-Column Sidebar Nav Grid** | On | Compact 3-column grid for top sidebar navigation (desktop & mobile web) |
 | **Interactive AI Question Cards** | On | Upgrades `[1] / [2]` text prompts into clickable selection panels |
 
@@ -134,7 +134,7 @@ For interactive charts, agents can call the built-in `fanframe_visualize` tool a
 ## Data & Privacy · 数据与权限边界
 
 - **No external network calls or telemetry**: Everything runs locally between your Paseo client and your own connected daemon host(s).
-- **Local storage**: Visual toggle states are stored in browser `localStorage`; cross-device uploaded images are stored under `~/.paseo/plugin-data/paseo-fanframe/shared-images/` (auto-pruned by age and count) and forwarded as prompt attachments to the selected agent provider.
+- **Local storage**: Visual toggle states are stored in browser `localStorage`; cross-device uploaded files are stored under `~/.paseo/plugin-data/paseo-fanframe/shared-files/` (plus legacy `shared-images/`, auto-pruned by age and count) and forwarded as image or native file attachments to the selected agent provider.
 - **Host file reads (workspace-scoped by default)**: Inline media previews enforce server-side `realpath` containment against the active conversation's workspace directory (`agent.cwd`), bounded by an extension allowlist and per-type size limits. Files outside the active workspace are blocked from automatic inspection/reading unless the user explicitly adds their directory to the per-host allowlist, confirms from the blocked notice card, or enables the opt-in **"Allow all paths"** switch (off by default) under **Settings → Plugins → FanFrame**.
 - **Sandboxed visualizations**: All `fanframe_visualize` cards render inside `sandbox="allow-scripts"` iframes with `Content-Security-Policy: default-src 'none'`.
 

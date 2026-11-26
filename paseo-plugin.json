@@ -1,11 +1,11 @@
 {
   "id": "paseo-fanframe",
   "name": "FanFrame",
-  "description": "Sharp-cornered dark and light themes with prose brightness layering, compact sidebar grid, interactive question cards, cross-device image uploads, and inline media/visualization players.",
+  "description": "Sharp-cornered dark and light themes with prose brightness layering, compact sidebar grid, interactive question cards, cross-device file transfers, and inline media/visualization players.",
   "translations": {
     "zh-CN": {
       "name": "繁界 · FanFrame",
-      "description": "深浅双色哥特直角主题，附带正文三档亮度分层、侧栏三列网格、AI 提问点选卡片、跨端传图与内嵌媒体/图表播放器。"
+      "description": "深浅双色哥特直角主题，附带正文三档亮度分层、侧栏三列网格、AI 提问点选卡片、跨端传文件与内嵌媒体/图表播放器。"
     }
   },
   "icon": "assets/icon.png",

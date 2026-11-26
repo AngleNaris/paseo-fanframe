@@ -1,8 +1,8 @@
 {
   "name": "paseo-fanframe",
   "private": true,
-  "version": "0.1.0",
-  "description": "Sharp-cornered dark and light themes with prose brightness layering, compact sidebar grid, interactive question cards, cross-device image uploads, and inline media/visualization players for Paseo.",
+  "version": "0.2.0",
+  "description": "Sharp-cornered dark and light themes with prose brightness layering, compact sidebar grid, interactive question cards, cross-device file transfers, and inline media/visualization players for Paseo.",
   "license": "MIT",
   "repository": {
     "type": "git",
