@@ -975,12 +975,6 @@ function MediaSegmentCard({
             ? `正在下载 · ${sizeLabel}`
             : "正在下载资源..."
         : "正在检查资源...";
-    const headerStatusLabel =
-      loadPhase === "downloading" && pctLabel
-        ? sizeLabel
-          ? `${pctLabel} · ${sizeLabel}`
-          : pctLabel
-        : sizeLabel || "载入中";
     const kindIcon =
       pendingKind === "image"
         ? "Image"
@@ -1015,7 +1009,7 @@ function MediaSegmentCard({
               borderBottomColor: c.border,
             }}
           >
-            <View style={{ flexDirection: "row", alignItems: "center", gap: 6, flexShrink: 1 }}>
+            <View style={{ flexDirection: "row", alignItems: "center", gap: 6, flex: 1, minWidth: 0 }}>
               <Icon name="Volume2" size={13} color={c.foregroundMuted} />
               <Text
                 style={{ color: c.foreground, fontSize: 12, fontWeight: "600", flexShrink: 1 }}
@@ -1025,13 +1019,15 @@ function MediaSegmentCard({
               </Text>
             </View>
             <Text
+              numberOfLines={1}
               style={{
                 color: c.foregroundMuted,
                 fontSize: 11.5,
                 fontVariant: ["tabular-nums"],
+                flexShrink: 0,
               }}
             >
-              {headerStatusLabel}
+              {sizeLabel || "载入中"}
             </Text>
           </View>
           <View
@@ -1059,14 +1055,16 @@ function MediaSegmentCard({
               <Icon name="Play" size={13} color={c.foregroundMuted} />
             </View>
             <Text
+              numberOfLines={1}
               style={{
                 color: c.foregroundMuted,
                 fontSize: 11.5,
                 fontVariant: ["tabular-nums"],
-                minWidth: compact ? 64 : 70,
+                minWidth: compact ? 42 : 48,
+                flexShrink: 0,
               }}
             >
-              {pctLabel ?? "0:00 / --:--"}
+              {pctLabel ?? "0:00"}
             </Text>
             <View style={{ flex: 1, minWidth: 60, height: 24, justifyContent: "center" }}>
               <FanframeProgressBar
@@ -1109,7 +1107,7 @@ function MediaSegmentCard({
               borderBottomColor: c.border,
             }}
           >
-            <View style={{ flexDirection: "row", alignItems: "center", gap: 6, flexShrink: 1 }}>
+            <View style={{ flexDirection: "row", alignItems: "center", gap: 6, flex: 1, minWidth: 0 }}>
               <Icon name={kindIcon} size={13} color={c.foregroundMuted} />
               <Text
                 style={{ color: c.foreground, fontSize: 12, fontWeight: "600", flexShrink: 1 }}
@@ -1118,24 +1116,20 @@ function MediaSegmentCard({
                 {displayTitle}
               </Text>
             </View>
-            {sizeLabel || pctLabel ? (
+            {sizeLabel ? (
               <Text
+                numberOfLines={1}
                 style={{
                   color: c.foregroundMuted,
                   fontSize: 11.5,
                   fontVariant: ["tabular-nums"],
+                  flexShrink: 0,
                 }}
               >
-                {headerStatusLabel}
+                {sizeLabel}
               </Text>
             ) : null}
           </View>
-          <FanframeProgressBar
-            color={c.accent}
-            trackColor={c.surface2}
-            height={3}
-            progress={progressRatio}
-          />
           <View
             style={{
               height: stageH,
@@ -1156,16 +1150,14 @@ function MediaSegmentCard({
             >
               {phaseLabel}
             </Text>
-            {downloadProgress ? (
-              <View style={{ width: compact ? 180 : 220 }}>
-                <FanframeProgressBar
-                  color={c.accent}
-                  trackColor={c.surface2}
-                  height={3}
-                  progress={downloadProgress.ratio}
-                />
-              </View>
-            ) : null}
+            <View style={{ width: compact ? 190 : 240 }}>
+              <FanframeProgressBar
+                color={c.accent}
+                trackColor={c.surface2}
+                height={3}
+                progress={progressRatio}
+              />
+            </View>
           </View>
           {pendingKind === "video" ? (
             <View
@@ -1195,22 +1187,19 @@ function MediaSegmentCard({
                 <Icon name="Play" size={13} color={c.foregroundMuted} />
               </View>
               <Text
+                numberOfLines={1}
                 style={{
                   color: c.foregroundMuted,
                   fontSize: 11.5,
                   fontVariant: ["tabular-nums"],
                   minWidth: compact ? 64 : 70,
+                  flexShrink: 0,
                 }}
               >
-                {pctLabel ?? "0:00 / --:--"}
+                0:00 / --:--
               </Text>
               <View style={{ flex: 1, minWidth: 60, height: 24, justifyContent: "center" }}>
-                <FanframeProgressBar
-                  color={c.accent}
-                  trackColor={c.surface2}
-                  height={3}
-                  progress={progressRatio}
-                />
+                <View style={{ width: "100%", height: 2, backgroundColor: c.surface2, opacity: 0.6 }} />
               </View>
             </View>
           ) : null}
