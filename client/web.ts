@@ -4,6 +4,7 @@ import {
   MAX_CROSS_FILE_BYTES,
   inferCrossFileKind,
 } from "../shared/cross-file";
+import type { MediaKind } from "../shared/media";
 
 export interface FanframePrefs {
   sharpCorners: boolean;
@@ -118,6 +119,34 @@ declare const document: {
   querySelector(selector: string): DomElement | null;
   querySelectorAll(selector: string): Iterable<DomElement>;
 };
+interface DomIdbRequest<T = unknown> {
+  readonly result: T;
+  readonly error: unknown;
+  onsuccess: (() => void) | null;
+  onerror: (() => void) | null;
+}
+interface DomIdbOpenRequest extends DomIdbRequest<DomIdbDatabase> {
+  onupgradeneeded: (() => void) | null;
+}
+interface DomIdbObjectStore {
+  get(key: string): DomIdbRequest<unknown>;
+  put(value: unknown): DomIdbRequest<unknown>;
+  delete(key: string): DomIdbRequest<unknown>;
+  getAll(): DomIdbRequest<unknown[]>;
+}
+interface DomIdbTransaction {
+  objectStore(name: string): DomIdbObjectStore;
+  oncomplete: (() => void) | null;
+  onerror: (() => void) | null;
+  onabort: (() => void) | null;
+}
+interface DomIdbDatabase {
+  readonly objectStoreNames: { contains(name: string): boolean };
+  createObjectStore(name: string, options?: { keyPath: string }): DomIdbObjectStore;
+  transaction(storeName: string, mode?: "readonly" | "readwrite"): DomIdbTransaction;
+  close(): void;
+}
+
 interface FanframeWebSingleton {
   readonly version: number;
   refCount: number;
@@ -127,6 +156,9 @@ interface FanframeWebSingleton {
 
 declare const window: {
   __paseoFanframeWeb?: FanframeWebSingleton;
+  readonly indexedDB?: {
+    open(name: string, version?: number): DomIdbOpenRequest;
+  };
   readonly location?: {
     readonly href?: string;
   };
@@ -1254,6 +1286,7 @@ export function installFanframeWeb(): () => void {
       applyWebEnhancements();
     },
     teardown: () => {
+      clearMediaMemoryCache();
       if (activeTeardown) {
         activeTeardown();
         activeTeardown = null;
@@ -3362,7 +3395,24 @@ export async function resolveCrossImagePreviewUri(
   if (existing) return existing;
 
   const task = (async () => {
-    const bytes = await readBytes(imageId);
+    const idbKey = `cross-image::${imageId}`;
+    let bytes: Uint8Array | null = null;
+    if (Platform.OS === "web") {
+      const diskHit = await readPersistentCachedMedia(idbKey);
+      if (diskHit && diskHit.bytes.byteLength > 0) {
+        bytes = diskHit.bytes;
+      }
+    }
+    if (!bytes) {
+      bytes = await readBytes(imageId);
+      if (Platform.OS === "web" && bytes.byteLength > 0) {
+        void writePersistentCachedMedia(
+          idbKey,
+          { kind: "image", mime: mimeType, name: imageId, size: bytes.byteLength },
+          bytes,
+        );
+      }
+    }
     const uri =
       Platform.OS === "web"
         ? URL.createObjectURL(new Blob([bytes], { type: mimeType }))
@@ -3666,4 +3716,268 @@ export function attachWebPasteAndDrop(
     el?.removeEventListener?.("dragleave", onDragLeave);
     el?.removeEventListener?.("drop", onDrop);
   };
+}
+
+// ==========================================================================
+// FanFrame 2-Tier Local Media Cache (RAM LRU + Persistent IndexedDB on Web)
+// ==========================================================================
+
+export interface CachedMediaMeta {
+  kind: MediaKind;
+  mime: string;
+  name: string;
+  size: number;
+  mtimeMs?: number;
+}
+
+export interface CachedMediaEntry {
+  key: string;
+  meta: CachedMediaMeta;
+  bytes: Uint8Array;
+  imageUri?: string;
+  imageDims?: { w: number; h: number } | null;
+  checkedAt: number;
+}
+
+interface PersistentMediaRecord {
+  key: string;
+  meta: CachedMediaMeta;
+  bytes: ArrayBuffer;
+  imageDims?: { w: number; h: number } | null;
+  byteLength: number;
+  savedAt: number;
+  lastUsedAt: number;
+}
+
+const MEDIA_RAM_MAX_BYTES = 160 * 1024 * 1024;
+const MEDIA_RAM_MAX_ENTRIES = 80;
+const MEDIA_IDB_NAME = "paseo-fanframe-media-cache-v1";
+const MEDIA_IDB_STORE = "entries";
+const MEDIA_IDB_MAX_BYTES = 256 * 1024 * 1024;
+const MEDIA_IDB_MAX_ENTRIES = 120;
+const MEDIA_IDB_MAX_SINGLE_BYTES = 64 * 1024 * 1024;
+
+const mediaRamCache = new Map<string, CachedMediaEntry>();
+let mediaRamTotalBytes = 0;
+let mediaIdbPromise: Promise<DomIdbDatabase | null> | null = null;
+
+export function buildMediaCacheKey(agentId: string, rawPath: string): string {
+  return `${agentId.trim()}::${rawPath.trim()}`;
+}
+
+function evictMediaRamIfNeeded(): void {
+  while (
+    mediaRamCache.size > MEDIA_RAM_MAX_ENTRIES ||
+    (mediaRamTotalBytes > MEDIA_RAM_MAX_BYTES && mediaRamCache.size > 1)
+  ) {
+    const oldestKey = mediaRamCache.keys().next().value;
+    if (!oldestKey) break;
+    const evicted = mediaRamCache.get(oldestKey);
+    mediaRamCache.delete(oldestKey);
+    if (evicted) {
+      mediaRamTotalBytes = Math.max(0, mediaRamTotalBytes - evicted.bytes.byteLength);
+      if (Platform.OS === "web" && evicted.imageUri?.startsWith("blob:")) {
+        revokeWebPreviewUrl(evicted.imageUri);
+      }
+    }
+  }
+}
+
+export function getMemoryCachedMedia(key: string): CachedMediaEntry | null {
+  const existing = mediaRamCache.get(key);
+  if (!existing) return null;
+  // Refresh LRU recency.
+  mediaRamCache.delete(key);
+  mediaRamCache.set(key, existing);
+  return existing;
+}
+
+export function putMemoryCachedMedia(entry: CachedMediaEntry): CachedMediaEntry {
+  const prev = mediaRamCache.get(entry.key);
+  if (prev) {
+    mediaRamTotalBytes = Math.max(0, mediaRamTotalBytes - prev.bytes.byteLength);
+    if (
+      Platform.OS === "web" &&
+      prev.imageUri &&
+      prev.imageUri !== entry.imageUri &&
+      prev.imageUri.startsWith("blob:")
+    ) {
+      revokeWebPreviewUrl(prev.imageUri);
+    }
+    mediaRamCache.delete(entry.key);
+  }
+  mediaRamCache.set(entry.key, entry);
+  mediaRamTotalBytes += entry.bytes.byteLength;
+  evictMediaRamIfNeeded();
+  return entry;
+}
+
+export function clearMediaMemoryCache(): void {
+  for (const entry of mediaRamCache.values()) {
+    if (Platform.OS === "web" && entry.imageUri?.startsWith("blob:")) {
+      revokeWebPreviewUrl(entry.imageUri);
+    }
+  }
+  mediaRamCache.clear();
+  mediaRamTotalBytes = 0;
+}
+
+function openMediaCacheDb(): Promise<DomIdbDatabase | null> {
+  if (Platform.OS !== "web") return Promise.resolve(null);
+  const idb = window.indexedDB;
+  if (!idb || typeof idb.open !== "function") return Promise.resolve(null);
+  if (mediaIdbPromise) return mediaIdbPromise;
+
+  mediaIdbPromise = new Promise<DomIdbDatabase | null>((resolve) => {
+    try {
+      const req = idb.open(MEDIA_IDB_NAME, 1);
+      req.onupgradeneeded = () => {
+        try {
+          const db = req.result;
+          if (!db.objectStoreNames.contains(MEDIA_IDB_STORE)) {
+            db.createObjectStore(MEDIA_IDB_STORE, { keyPath: "key" });
+          }
+        } catch {
+          // Ignore upgrade errors.
+        }
+      };
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => {
+        mediaIdbPromise = null;
+        resolve(null);
+      };
+    } catch {
+      mediaIdbPromise = null;
+      resolve(null);
+    }
+  });
+  return mediaIdbPromise;
+}
+
+function pruneMediaCacheDb(db: DomIdbDatabase): void {
+  try {
+    const tx = db.transaction(MEDIA_IDB_STORE, "readwrite");
+    const store = tx.objectStore(MEDIA_IDB_STORE);
+    const req = store.getAll();
+    req.onsuccess = () => {
+      const records = (Array.isArray(req.result) ? req.result : []) as PersistentMediaRecord[];
+      let totalBytes = 0;
+      for (const r of records) {
+        totalBytes += typeof r?.byteLength === "number" ? r.byteLength : 0;
+      }
+      if (records.length <= MEDIA_IDB_MAX_ENTRIES && totalBytes <= MEDIA_IDB_MAX_BYTES) return;
+      records.sort((a, b) => (a.lastUsedAt ?? 0) - (b.lastUsedAt ?? 0));
+      let remainingCount = records.length;
+      for (const rec of records) {
+        if (remainingCount <= MEDIA_IDB_MAX_ENTRIES && totalBytes <= MEDIA_IDB_MAX_BYTES) break;
+        if (rec?.key) {
+          store.delete(rec.key);
+          remainingCount -= 1;
+          totalBytes = Math.max(0, totalBytes - (rec.byteLength ?? 0));
+        }
+      }
+    };
+  } catch {
+    // Ignore background prune errors.
+  }
+}
+
+export async function readPersistentCachedMedia(key: string): Promise<{
+  meta: CachedMediaMeta;
+  bytes: Uint8Array;
+  imageDims?: { w: number; h: number } | null;
+} | null> {
+  const db = await openMediaCacheDb();
+  if (!db) return null;
+
+  return new Promise((resolve) => {
+    try {
+      const tx = db.transaction(MEDIA_IDB_STORE, "readwrite");
+      const store = tx.objectStore(MEDIA_IDB_STORE);
+      const req = store.get(key);
+      req.onsuccess = () => {
+        const rec = req.result as PersistentMediaRecord | undefined;
+        if (!rec || !rec.meta || !(rec.bytes instanceof ArrayBuffer)) {
+          resolve(null);
+          return;
+        }
+        // Touch lastUsedAt for LRU ordering.
+        try {
+          store.put({ ...rec, lastUsedAt: Date.now() });
+        } catch {
+          // Ignore touch failures.
+        }
+        resolve({
+          meta: rec.meta,
+          bytes: new Uint8Array(rec.bytes),
+          imageDims: rec.imageDims ?? null,
+        });
+      };
+      req.onerror = () => resolve(null);
+    } catch {
+      resolve(null);
+    }
+  });
+}
+
+export async function writePersistentCachedMedia(
+  key: string,
+  meta: CachedMediaMeta,
+  bytes: Uint8Array,
+  imageDims?: { w: number; h: number } | null,
+): Promise<void> {
+  if (bytes.byteLength <= 0 || bytes.byteLength > MEDIA_IDB_MAX_SINGLE_BYTES) return;
+  const db = await openMediaCacheDb();
+  if (!db) return;
+
+  const copied = new Uint8Array(bytes.byteLength);
+  copied.set(bytes);
+  const now = Date.now();
+  const record: PersistentMediaRecord = {
+    key,
+    meta,
+    bytes: copied.buffer,
+    imageDims: imageDims ?? null,
+    byteLength: bytes.byteLength,
+    savedAt: now,
+    lastUsedAt: now,
+  };
+
+  await new Promise<void>((resolve) => {
+    try {
+      const tx = db.transaction(MEDIA_IDB_STORE, "readwrite");
+      const store = tx.objectStore(MEDIA_IDB_STORE);
+      store.put(record);
+      tx.oncomplete = () => {
+        pruneMediaCacheDb(db);
+        resolve();
+      };
+      tx.onerror = () => resolve();
+      tx.onabort = () => resolve();
+    } catch {
+      resolve();
+    }
+  });
+}
+
+export function invalidateMediaCacheEntry(key: string): void {
+  const prev = mediaRamCache.get(key);
+  if (prev) {
+    mediaRamTotalBytes = Math.max(0, mediaRamTotalBytes - prev.bytes.byteLength);
+    if (Platform.OS === "web" && prev.imageUri?.startsWith("blob:")) {
+      revokeWebPreviewUrl(prev.imageUri);
+    }
+    mediaRamCache.delete(key);
+  }
+  if (Platform.OS === "web") {
+    void openMediaCacheDb().then((db) => {
+      if (!db) return;
+      try {
+        const tx = db.transaction(MEDIA_IDB_STORE, "readwrite");
+        tx.objectStore(MEDIA_IDB_STORE).delete(key);
+      } catch {
+        // Ignore delete failures.
+      }
+    });
+  }
 }

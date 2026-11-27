@@ -32,6 +32,8 @@ export const inspectMediaRpc = defineRpc({
     mime: z.string().optional(),
     name: z.string().optional(),
     size: z.number().optional(),
+    mtimeMs: z.number().optional(),
+    supportsChunks: z.boolean().optional(),
   }),
 });
 
@@ -40,6 +42,8 @@ export const readMediaBytesRpc = defineRpc({
   input: z.object({
     agentId: z.string().min(1).max(128),
     path: z.string().min(1),
+    offset: z.number().int().nonnegative().optional(),
+    length: z.number().int().positive().max(16 * 1024 * 1024).optional(),
   }),
   output: z.instanceof(Uint8Array),
 });

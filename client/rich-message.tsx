@@ -22,16 +22,22 @@ import {
 } from "../shared/rich-message";
 import { getVisualizeCardRpc } from "../shared/visualize";
 import {
+  type CachedMediaMeta,
   type WebMediaPlayerHandle,
   type WebMediaPlayerState,
   bindWebScrubber,
+  buildMediaCacheKey,
   createWebBlobUrl,
   createWebMediaPlayer,
   decodeUtf8Bytes,
   encodeBytesToDataUri,
+  getMemoryCachedMedia,
+  invalidateMediaCacheEntry,
   mountVisualizeCard,
   mountWebMediaElement,
-  revokeWebPreviewUrl,
+  putMemoryCachedMedia,
+  readPersistentCachedMedia,
+  writePersistentCachedMedia,
 } from "./web";
 
 function formatMediaTime(seconds: number): string {
@@ -59,16 +65,23 @@ function FanframeProgressBar({
   color,
   trackColor,
   height = 2,
+  progress = null,
 }: {
   color: string;
   trackColor: string;
   height?: number;
+  /** Determinate ratio in [0, 1]; omit or pass null for indeterminate loading sweep. */
+  progress?: number | null;
 }) {
-  const progress = useRef(new Animated.Value(0)).current;
+  const sweep = useRef(new Animated.Value(0)).current;
+  const determinate = useRef(new Animated.Value(progress ?? 0)).current;
+  const isDeterminate = typeof progress === "number" && Number.isFinite(progress);
 
   useEffect(() => {
+    if (isDeterminate) return;
+    sweep.setValue(0);
     const anim = Animated.loop(
-      Animated.timing(progress, {
+      Animated.timing(sweep, {
         toValue: 1,
         duration: 1150,
         easing: Easing.inOut(Easing.ease),
@@ -79,11 +92,31 @@ function FanframeProgressBar({
     return () => {
       anim.stop();
     };
-  }, [progress]);
+  }, [sweep, isDeterminate]);
 
-  const left = progress.interpolate({
+  useEffect(() => {
+    if (!isDeterminate) return;
+    const clamped = Math.max(0, Math.min(1, progress));
+    const anim = Animated.timing(determinate, {
+      toValue: clamped,
+      duration: 110,
+      easing: Easing.out(Easing.cubic),
+      useNativeDriver: false,
+    });
+    anim.start();
+    return () => {
+      anim.stop();
+    };
+  }, [determinate, isDeterminate, progress]);
+
+  const left = sweep.interpolate({
     inputRange: [0, 1],
     outputRange: ["-38%", "100%"],
+  });
+
+  const width = determinate.interpolate({
+    inputRange: [0, 1],
+    outputRange: ["0%", "100%"],
   });
 
   return (
@@ -97,16 +130,30 @@ function FanframeProgressBar({
         position: "relative",
       }}
     >
-      <Animated.View
-        style={{
-          position: "absolute",
-          top: 0,
-          bottom: 0,
-          width: "38%",
-          left,
-          backgroundColor: color,
-        }}
-      />
+      {isDeterminate ? (
+        <Animated.View
+          testID="fanframe-loading-progress-fill"
+          style={{
+            position: "absolute",
+            top: 0,
+            bottom: 0,
+            left: 0,
+            width,
+            backgroundColor: color,
+          }}
+        />
+      ) : (
+        <Animated.View
+          style={{
+            position: "absolute",
+            top: 0,
+            bottom: 0,
+            width: "38%",
+            left,
+            backgroundColor: color,
+          }}
+        />
+      )}
     </View>
   );
 }
@@ -127,11 +174,133 @@ function isDarkHex(hex: string): boolean {
   return (0.299 * r + 0.587 * g + 0.114 * b) / 255 < 0.5;
 }
 
-interface MediaMeta {
-  kind: MediaKind;
-  mime: string;
-  name: string;
-  size: number;
+interface MediaMeta extends CachedMediaMeta {
+  supportsChunks?: boolean;
+}
+
+interface MediaDownloadProgress {
+  loaded: number;
+  total: number;
+  ratio: number;
+}
+
+interface InflightMediaDownload {
+  promise: Promise<Uint8Array>;
+  latestProgress: MediaDownloadProgress | null;
+  listeners: Set<(progress: MediaDownloadProgress) => void>;
+}
+
+const inflightMediaDownloads = new Map<string, InflightMediaDownload>();
+const MEDIA_CACHE_REVALIDATE_MS = 60 * 1000;
+
+function chooseMediaChunkSize(totalSize: number): number {
+  if (totalSize <= 512 * 1024) return Math.max(1, totalSize);
+  if (totalSize <= 4 * 1024 * 1024) return 256 * 1024;
+  if (totalSize <= 20 * 1024 * 1024) return 512 * 1024;
+  return 1024 * 1024;
+}
+
+function cacheMatchesInspect(
+  cachedMeta: CachedMediaMeta,
+  inspected: { size: number; mtimeMs?: number; mime: string; kind: MediaKind },
+): boolean {
+  if (cachedMeta.kind !== inspected.kind || cachedMeta.mime !== inspected.mime) return false;
+  if (cachedMeta.size !== inspected.size) return false;
+  if (
+    typeof inspected.mtimeMs === "number" &&
+    typeof cachedMeta.mtimeMs === "number" &&
+    cachedMeta.mtimeMs !== inspected.mtimeMs
+  ) {
+    return false;
+  }
+  return true;
+}
+
+function downloadMediaWithProgress(
+  cacheKey: string,
+  meta: MediaMeta,
+  readChunk: (input: {
+    agentId: string;
+    path: string;
+    offset?: number;
+    length?: number;
+  }) => Promise<Uint8Array>,
+  agentId: string,
+  path: string,
+  onProgress?: (progress: MediaDownloadProgress) => void,
+): Promise<Uint8Array> {
+  const existing = inflightMediaDownloads.get(cacheKey);
+  if (existing) {
+    if (onProgress) {
+      if (existing.latestProgress) onProgress(existing.latestProgress);
+      existing.listeners.add(onProgress);
+      void existing.promise.finally(() => {
+        existing.listeners.delete(onProgress);
+      });
+    }
+    return existing.promise;
+  }
+
+  const listeners = new Set<(progress: MediaDownloadProgress) => void>();
+  if (onProgress) listeners.add(onProgress);
+
+  const entry: InflightMediaDownload = {
+    promise: Promise.resolve(new Uint8Array(0)),
+    latestProgress: null,
+    listeners,
+  };
+
+  const emitProgress = (loaded: number, total: number) => {
+    const safeTotal = Math.max(1, total);
+    const ratio = Math.max(0, Math.min(1, loaded / safeTotal));
+    const snapshot: MediaDownloadProgress = { loaded, total: safeTotal, ratio };
+    entry.latestProgress = snapshot;
+    for (const listener of entry.listeners) {
+      listener(snapshot);
+    }
+  };
+
+  const task = (async (): Promise<Uint8Array> => {
+    const total = meta.size;
+    const useChunks = Boolean(meta.supportsChunks) && total > 256 * 1024;
+    if (!useChunks) {
+      const data = await readChunk({ agentId, path });
+      if (total > 0) emitProgress(data.byteLength, Math.max(total, data.byteLength));
+      return data;
+    }
+
+    const chunkSize = chooseMediaChunkSize(total);
+    emitProgress(0, total);
+    const out = new Uint8Array(total);
+    let offset = 0;
+    while (offset < total) {
+      const length = Math.min(chunkSize, total - offset);
+      const part = await readChunk({ agentId, path, offset, length });
+      if (part.byteLength === 0) break;
+      const copyLen = Math.min(part.byteLength, total - offset);
+      out.set(part.subarray(0, copyLen), offset);
+      offset += copyLen;
+      emitProgress(offset, total);
+    }
+    return offset === total ? out : out.subarray(0, offset);
+  })().finally(() => {
+    inflightMediaDownloads.delete(cacheKey);
+    entry.listeners.clear();
+  });
+
+  entry.promise = task;
+  inflightMediaDownloads.set(cacheKey, entry);
+  return task;
+}
+
+function resolveImageDimensions(uri: string): Promise<{ w: number; h: number } | null> {
+  return new Promise((resolve) => {
+    Image.getSize(
+      uri,
+      (w, h) => resolve(w > 0 && h > 0 ? { w, h } : null),
+      () => resolve(null),
+    );
+  });
 }
 
 function FanframeMediaPlayer({
@@ -493,13 +662,20 @@ function MediaSegmentCard({
   const readMediaBytes = useRpc(readMediaBytesRpc);
   const mediaSettings = useSettings(mediaAccessSettings);
 
-  const [meta, setMeta] = useState<MediaMeta | null>(null);
-  const [bytes, setBytes] = useState<Uint8Array | null>(null);
-  const [imageUri, setImageUri] = useState<string | null>(null);
-  const [imageDims, setImageDims] = useState<{ w: number; h: number } | null>(null);
-  const [loading, setLoading] = useState(true);
+  const cacheKey = buildMediaCacheKey(agentId, path);
+  const initialCached = getMemoryCachedMedia(cacheKey);
+
+  const [meta, setMeta] = useState<MediaMeta | null>(() => initialCached?.meta ?? null);
+  const [bytes, setBytes] = useState<Uint8Array | null>(() => initialCached?.bytes ?? null);
+  const [imageUri, setImageUri] = useState<string | null>(() => initialCached?.imageUri ?? null);
+  const [imageDims, setImageDims] = useState<{ w: number; h: number } | null>(
+    () => initialCached?.imageDims ?? null,
+  );
+  const [loading, setLoading] = useState<boolean>(() => !initialCached);
   const [loadPhase, setLoadPhase] = useState<"inspecting" | "downloading">("inspecting");
+  const [downloadProgress, setDownloadProgress] = useState<MediaDownloadProgress | null>(null);
   const [loadingBody, setLoadingBody] = useState(false);
+  const [bodyProgress, setBodyProgress] = useState<MediaDownloadProgress | null>(null);
   const [expanded, setExpanded] = useState(false);
   const [lightboxOpen, setLightboxOpen] = useState(false);
   const [blocked, setBlocked] = useState(false);
@@ -509,9 +685,125 @@ function MediaSegmentCard({
 
   useEffect(() => {
     let cancelled = false;
-    let ownedBlobUrl: string | null = null;
+    const forceReload = reloadTick > 0;
+    const memHit = forceReload ? null : getMemoryCachedMedia(cacheKey);
+
+    const hydrateFromBytes = async (
+      nextMeta: MediaMeta,
+      data: Uint8Array,
+      knownDims?: { w: number; h: number } | null,
+      persistToDisk = false,
+    ) => {
+      let uri: string | undefined;
+      let dims: { w: number; h: number } | null = knownDims ?? null;
+      if (nextMeta.kind === "image") {
+        uri = isWeb
+          ? createWebBlobUrl(data, nextMeta.mime)
+          : encodeBytesToDataUri(data, nextMeta.mime);
+        if (!dims) {
+          dims = await resolveImageDimensions(uri);
+        }
+        if (cancelled) return;
+      }
+
+      const cachedMeta: CachedMediaMeta = {
+        kind: nextMeta.kind,
+        mime: nextMeta.mime,
+        name: nextMeta.name,
+        size: nextMeta.size,
+        ...(typeof nextMeta.mtimeMs === "number" ? { mtimeMs: nextMeta.mtimeMs } : {}),
+      };
+      putMemoryCachedMedia({
+        key: cacheKey,
+        meta: cachedMeta,
+        bytes: data,
+        imageUri: uri,
+        imageDims: dims,
+        checkedAt: Date.now(),
+      });
+      if (persistToDisk) {
+        void writePersistentCachedMedia(cacheKey, cachedMeta, data, dims);
+      }
+
+      if (cancelled) return;
+      setMeta(nextMeta);
+      setBytes(data);
+      setImageDims(dims);
+      setImageUri(uri ?? null);
+      setDownloadProgress(null);
+      setError(null);
+      setBlocked(false);
+      setLoading(false);
+    };
+
+    if (memHit) {
+      setMeta(memHit.meta);
+      setBytes(memHit.bytes);
+      setImageUri(memHit.imageUri ?? null);
+      setImageDims(memHit.imageDims ?? null);
+      setError(null);
+      setBlocked(false);
+      setLoading(false);
+
+      // Revalidate silently in background if the memory cache entry is older than 60s.
+      if (Date.now() - memHit.checkedAt < MEDIA_CACHE_REVALIDATE_MS) {
+        return () => {
+          cancelled = true;
+        };
+      }
+
+      void (async () => {
+        try {
+          const res = await inspectMedia({ agentId, path });
+          if (cancelled || !res.ok || !res.kind || !res.mime) return;
+          const nextMeta: MediaMeta = {
+            kind: res.kind,
+            mime: res.mime,
+            name: res.name ?? path,
+            size: res.size ?? 0,
+            ...(typeof res.mtimeMs === "number" ? { mtimeMs: res.mtimeMs } : {}),
+            ...(res.supportsChunks ? { supportsChunks: true } : {}),
+          };
+          if (cacheMatchesInspect(memHit.meta, nextMeta)) {
+            memHit.checkedAt = Date.now();
+            return;
+          }
+          // File changed on disk: refresh smoothly.
+          invalidateMediaCacheEntry(cacheKey);
+          if (nextMeta.kind === "image" || nextMeta.kind === "audio" || nextMeta.kind === "video") {
+            setMeta(nextMeta);
+            setLoadPhase("downloading");
+            setDownloadProgress(null);
+            setLoading(true);
+            const data = await downloadMediaWithProgress(
+              cacheKey,
+              nextMeta,
+              readMediaBytes,
+              agentId,
+              path,
+              (p) => {
+                if (!cancelled) setDownloadProgress(p);
+              },
+            );
+            if (cancelled) return;
+            await hydrateFromBytes(nextMeta, data, null, true);
+          } else {
+            setMeta(nextMeta);
+            setBytes(null);
+          }
+        } catch {
+          // Keep serving valid RAM cache on transient background check errors.
+        }
+      })();
+
+      return () => {
+        cancelled = true;
+      };
+    }
+
     setLoading(true);
     setLoadPhase("inspecting");
+    setDownloadProgress(null);
     setError(null);
     setBlocked(false);
     setMeta(null);
@@ -521,7 +813,10 @@ function MediaSegmentCard({
 
     void (async () => {
       try {
-        const res = await inspectMedia({ agentId, path });
+        const [res, diskHit] = await Promise.all([
+          inspectMedia({ agentId, path }),
+          forceReload ? Promise.resolve(null) : readPersistentCachedMedia(cacheKey),
+        ]);
         if (cancelled) return;
         if (!res.ok || !res.kind || !res.mime) {
           setBlocked(Boolean(res.blocked));
@@ -534,30 +829,42 @@ function MediaSegmentCard({
           mime: res.mime,
           name: res.name ?? path,
           size: res.size ?? 0,
+          ...(typeof res.mtimeMs === "number" ? { mtimeMs: res.mtimeMs } : {}),
+          ...(res.supportsChunks ? { supportsChunks: true } : {}),
         };
         setMeta(nextMeta);
 
         if (nextMeta.kind === "image" || nextMeta.kind === "audio" || nextMeta.kind === "video") {
-          setLoadPhase("downloading");
-          const data = await readMediaBytes({ agentId, path });
-          if (cancelled) return;
-          setBytes(data);
-          if (nextMeta.kind === "image") {
-            const uri = isWeb
-              ? createWebBlobUrl(data, nextMeta.mime)
-              : encodeBytesToDataUri(data, nextMeta.mime);
-            if (isWeb) ownedBlobUrl = uri;
-            const dims = await new Promise<{ w: number; h: number } | null>((resolve) => {
-              Image.getSize(
-                uri,
-                (w, h) => resolve(w > 0 && h > 0 ? { w, h } : null),
-                () => resolve(null),
-              );
-            });
-            if (cancelled) return;
-            if (dims) setImageDims(dims);
-            setImageUri(uri);
+          if (diskHit && cacheMatchesInspect(diskHit.meta, nextMeta)) {
+            await hydrateFromBytes(nextMeta, diskHit.bytes, diskHit.imageDims, false);
+            return;
           }
+
+          setLoadPhase("downloading");
+          const data = await downloadMediaWithProgress(
+            cacheKey,
+            nextMeta,
+            readMediaBytes,
+            agentId,
+            path,
+            (p) => {
+              if (!cancelled) setDownloadProgress(p);
+            },
+          );
+          if (cancelled) return;
+          await hydrateFromBytes(nextMeta, data, null, true);
+          return;
+        }
+
+        // PDF / text documents hydrate cached body if already downloaded previously, else stay lazy.
+        if (diskHit && cacheMatchesInspect(diskHit.meta, nextMeta)) {
+          putMemoryCachedMedia({
+            key: cacheKey,
+            meta: diskHit.meta,
+            bytes: diskHit.bytes,
+            checkedAt: Date.now(),
+          });
+          setBytes(diskHit.bytes);
         }
         setLoading(false);
       } catch (err) {
@@ -570,9 +877,8 @@ function MediaSegmentCard({
 
     return () => {
       cancelled = true;
-      if (ownedBlobUrl) revokeWebPreviewUrl(ownedBlobUrl);
     };
-  }, [agentId, path, inspectMedia, readMediaBytes, isWeb, reloadTick]);
+  }, [agentId, path, cacheKey, inspectMedia, readMediaBytes, isWeb, reloadTick]);
 
   const displayTitle = title?.trim() || meta?.name || path;
   const sizeLabel = meta && meta.size > 0 ? formatByteSize(meta.size) : "";
@@ -606,25 +912,75 @@ function MediaSegmentCard({
   const handleToggleDocument = async () => {
     const nextOpen = !expanded;
     setExpanded(nextOpen);
-    if (!nextOpen || bytes || loadingBody) return;
+    if (!nextOpen || bytes || loadingBody || !meta) return;
+    const memHit = getMemoryCachedMedia(cacheKey);
+    if (memHit && cacheMatchesInspect(memHit.meta, meta)) {
+      setBytes(memHit.bytes);
+      return;
+    }
     setLoadingBody(true);
+    setBodyProgress(null);
     try {
-      const data = await readMediaBytes({ agentId, path });
+      const diskHit = await readPersistentCachedMedia(cacheKey);
+      if (diskHit && cacheMatchesInspect(diskHit.meta, meta)) {
+        putMemoryCachedMedia({
+          key: cacheKey,
+          meta: diskHit.meta,
+          bytes: diskHit.bytes,
+          checkedAt: Date.now(),
+        });
+        setBytes(diskHit.bytes);
+        return;
+      }
+      const data = await downloadMediaWithProgress(
+        cacheKey,
+        meta,
+        readMediaBytes,
+        agentId,
+        path,
+        (p) => setBodyProgress(p),
+      );
+      const cachedMeta: CachedMediaMeta = {
+        kind: meta.kind,
+        mime: meta.mime,
+        name: meta.name,
+        size: meta.size,
+        ...(typeof meta.mtimeMs === "number" ? { mtimeMs: meta.mtimeMs } : {}),
+      };
+      putMemoryCachedMedia({
+        key: cacheKey,
+        meta: cachedMeta,
+        bytes: data,
+        checkedAt: Date.now(),
+      });
+      void writePersistentCachedMedia(cacheKey, cachedMeta, data);
       setBytes(data);
     } catch (err) {
       setError(err instanceof Error ? err.message : "读取文件内容失败");
     } finally {
       setLoadingBody(false);
+      setBodyProgress(null);
     }
   };
 
   if (loading) {
+    const pctLabel =
+      downloadProgress !== null ? `${Math.round(downloadProgress.ratio * 100)}%` : null;
+    const progressRatio = loadPhase === "downloading" ? (downloadProgress?.ratio ?? null) : null;
     const phaseLabel =
       loadPhase === "downloading"
-        ? sizeLabel
-          ? `正在载入 · ${sizeLabel}`
-          : "正在载入资源..."
+        ? downloadProgress
+          ? `正在下载 · ${formatByteSize(downloadProgress.loaded)} / ${formatByteSize(downloadProgress.total)} (${pctLabel})`
+          : sizeLabel
+            ? `正在下载 · ${sizeLabel}`
+            : "正在下载资源..."
         : "正在检查资源...";
+    const headerStatusLabel =
+      loadPhase === "downloading" && pctLabel
+        ? sizeLabel
+          ? `${pctLabel} · ${sizeLabel}`
+          : pctLabel
+        : sizeLabel || "载入中";
     const kindIcon =
       pendingKind === "image"
         ? "Image"
@@ -668,7 +1024,15 @@ function MediaSegmentCard({
                 {displayTitle}
               </Text>
             </View>
-            <Text style={{ color: c.foregroundMuted, fontSize: 11.5 }}>{sizeLabel || "载入中"}</Text>
+            <Text
+              style={{
+                color: c.foregroundMuted,
+                fontSize: 11.5,
+                fontVariant: ["tabular-nums"],
+              }}
+            >
+              {headerStatusLabel}
+            </Text>
           </View>
           <View
             style={{
@@ -702,10 +1066,15 @@ function MediaSegmentCard({
                 minWidth: compact ? 64 : 70,
               }}
             >
-              0:00 / --:--
+              {pctLabel ?? "0:00 / --:--"}
             </Text>
             <View style={{ flex: 1, minWidth: 60, height: 24, justifyContent: "center" }}>
-              <FanframeProgressBar color={c.accent} trackColor={c.surface2} height={2} />
+              <FanframeProgressBar
+                color={c.accent}
+                trackColor={c.surface2}
+                height={3}
+                progress={progressRatio}
+              />
             </View>
           </View>
         </View>
@@ -749,23 +1118,54 @@ function MediaSegmentCard({
                 {displayTitle}
               </Text>
             </View>
-            {sizeLabel ? (
-              <Text style={{ color: c.foregroundMuted, fontSize: 11.5 }}>{sizeLabel}</Text>
+            {sizeLabel || pctLabel ? (
+              <Text
+                style={{
+                  color: c.foregroundMuted,
+                  fontSize: 11.5,
+                  fontVariant: ["tabular-nums"],
+                }}
+              >
+                {headerStatusLabel}
+              </Text>
             ) : null}
           </View>
-          <FanframeProgressBar color={c.accent} trackColor={c.surface2} height={2} />
+          <FanframeProgressBar
+            color={c.accent}
+            trackColor={c.surface2}
+            height={3}
+            progress={progressRatio}
+          />
           <View
             style={{
               height: stageH,
               backgroundColor: c.surface0,
               alignItems: "center",
               justifyContent: "center",
-              gap: 8,
+              gap: 10,
               padding: 16,
             }}
           >
             <Icon name={kindIcon} size={20} color={c.foregroundMuted} />
-            <Text style={{ color: c.foregroundMuted, fontSize: 12 }}>{phaseLabel}</Text>
+            <Text
+              style={{
+                color: c.foregroundMuted,
+                fontSize: 12,
+                fontVariant: ["tabular-nums"],
+              }}
+            >
+              {phaseLabel}
+            </Text>
+            {downloadProgress ? (
+              <View style={{ width: compact ? 180 : 220 }}>
+                <FanframeProgressBar
+                  color={c.accent}
+                  trackColor={c.surface2}
+                  height={3}
+                  progress={downloadProgress.ratio}
+                />
+              </View>
+            ) : null}
           </View>
           {pendingKind === "video" ? (
             <View
@@ -802,10 +1202,15 @@ function MediaSegmentCard({
                   minWidth: compact ? 64 : 70,
                 }}
               >
-                0:00 / --:--
+                {pctLabel ?? "0:00 / --:--"}
               </Text>
               <View style={{ flex: 1, minWidth: 60, height: 24, justifyContent: "center" }}>
-                <FanframeProgressBar color={c.accent} trackColor={c.surface2} height={2} />
+                <FanframeProgressBar
+                  color={c.accent}
+                  trackColor={c.surface2}
+                  height={3}
+                  progress={progressRatio}
+                />
               </View>
             </View>
           ) : null}
@@ -844,9 +1249,22 @@ function MediaSegmentCard({
               {displayTitle}
             </Text>
           </View>
-          <Text style={{ color: c.foregroundMuted, fontSize: 11.5 }}>{phaseLabel}</Text>
+          <Text
+            style={{
+              color: c.foregroundMuted,
+              fontSize: 11.5,
+              fontVariant: ["tabular-nums"],
+            }}
+          >
+            {phaseLabel}
+          </Text>
         </View>
-        <FanframeProgressBar color={c.accent} trackColor={c.surface2} height={2} />
+        <FanframeProgressBar
+          color={c.accent}
+          trackColor={c.surface2}
+          height={3}
+          progress={progressRatio}
+        />
       </View>
     );
   }
@@ -1133,9 +1551,23 @@ function MediaSegmentCard({
         <View style={{ borderTopWidth: 1, borderTopColor: c.border }}>
           {loadingBody ? (
             <View>
-              <FanframeProgressBar color={c.accent} trackColor={c.surface2} height={2} />
-              <Text style={{ color: c.foregroundMuted, fontSize: 12, padding: 10 }}>
-                正在读取文件内容...
+              <FanframeProgressBar
+                color={c.accent}
+                trackColor={c.surface2}
+                height={3}
+                progress={bodyProgress?.ratio ?? null}
+              />
+              <Text
+                style={{
+                  color: c.foregroundMuted,
+                  fontSize: 12,
+                  padding: 10,
+                  fontVariant: ["tabular-nums"],
+                }}
+              >
+                {bodyProgress
+                  ? `正在下载文件内容 · ${formatByteSize(bodyProgress.loaded)} / ${formatByteSize(bodyProgress.total)} (${Math.round(bodyProgress.ratio * 100)}%)`
+                  : "正在读取文件内容..."}
               </Text>
             </View>
           ) : bytes ? (

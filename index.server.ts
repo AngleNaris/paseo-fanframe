@@ -15,10 +15,20 @@ import {
 } from "./shared/visualize";
 
 // Minimal Node fs/path/process bridge via dynamic import so tsconfig stays DOM/Node-free.
+type FsFileHandle = {
+  read(
+    buffer: Uint8Array,
+    offset: number,
+    length: number,
+    position: number,
+  ): Promise<{ bytesRead: number }>;
+  close(): Promise<void>;
+};
 type FsModule = {
-  stat(path: string): Promise<{ isFile(): boolean; size: number }>;
+  stat(path: string): Promise<{ isFile(): boolean; size: number; mtimeMs: number }>;
   realpath(path: string): Promise<string>;
   readFile(path: string): Promise<Uint8Array>;
+  open(path: string, flags: string): Promise<FsFileHandle>;
 };
 type PathModule = {
   extname(p: string): string;
@@ -249,6 +259,7 @@ export default function contribute(server: PluginServerContext) {
         spec: { kind: MediaKind; mime: string; maxBytes: number };
         name: string;
         size: number;
+        mtimeMs: number;
       }
     | {
         ok: false;
@@ -382,6 +393,7 @@ export default function contribute(server: PluginServerContext) {
         spec,
         name: pathMod.basename(resolvedFile),
         size: stat.size,
+        mtimeMs: Math.round(stat.mtimeMs),
       };
     } catch {
       return { ok: false, error: "File not found or unreadable." };
@@ -407,17 +419,35 @@ export default function contribute(server: PluginServerContext) {
       mime: auth.spec.mime,
       name: auth.name,
       size: auth.size,
+      mtimeMs: auth.mtimeMs,
+      supportsChunks: true,
     };
   });
 
-  server.handle(readMediaBytesRpc, async ({ agentId, path: rawPath }, { paseo }) => {
+  server.handle(readMediaBytesRpc, async ({ agentId, path: rawPath, offset, length }, { paseo }) => {
     const auth = await resolveAuthorizedMediaFile(agentId, rawPath, paseo);
     if (!auth.ok) {
       throw new Error(auth.error);
     }
     const fsMod = await loadFs();
-    const data = await fsMod.readFile(auth.resolvedPath);
-    return new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
+    if (offset === undefined && length === undefined) {
+      const data = await fsMod.readFile(auth.resolvedPath);
+      return new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
+    }
+
+    const start = Math.max(0, offset ?? 0);
+    if (start >= auth.size) {
+      return new Uint8Array(0);
+    }
+    const toRead = Math.min(length ?? auth.size - start, auth.size - start);
+    const handle = await fsMod.open(auth.resolvedPath, "r");
+    try {
+      const buf = new Uint8Array(toRead);
+      const { bytesRead } = await handle.read(buf, 0, toRead, start);
+      return bytesRead === toRead ? buf : buf.subarray(0, bytesRead);
+    } finally {
+      await handle.close();
+    }
   });
 
   return () => {

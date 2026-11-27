@@ -45,7 +45,7 @@
 
 ### ⚡ Interaction & Cross-Host Media · 交互与跨主机媒体
 - **Interactive Question Cards** — Automatically upgrades plain-text `[1] / [2]` option prompts (e.g. Antigravity over ACP) into clickable multi-step cards with auto-advance, one-tap recommended selection, custom notes, and automatic collapse once answered.
-- **Host-Scoped Inline Media & Custom Player** — Renders ` ```fanframe-media ` blocks across **both local and remote hosts**, featuring layout-preserving loading skeletons with animated progress bars, lightbox image zoom, expandable PDF/text previews, and a custom sharp-cornered audio/video player (play/pause, drag scrubber, mute, fullscreen, download).
+- **Host-Scoped Inline Media & Custom Player** — Renders ` ```fanframe-media ` blocks across **both local and remote hosts**, featuring chunked download progress bars, 2-tier local caching (RAM LRU + persistent IndexedDB with size/mtime validation), layout-preserving loading skeletons, lightbox image zoom, expandable PDF/text previews, and a custom sharp-cornered audio/video player (play/pause, drag scrubber, mute, fullscreen, download).
 - **Cross-Device File Transfer (`传文件`)** — Adds a composer `传文件` pill supporting images (auto-compressed to ≤1600px by default, with an original-quality toggle) and arbitrary files up to 50 MiB via chunked upload/download, forwarding native attachments to the active agent and rendering synchronized preview/download cards across desktop and mobile clients.
 
 ---
