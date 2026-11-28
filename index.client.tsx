@@ -3,6 +3,7 @@ import { contributeAskQuestion } from "./client/ask-question";
 import { contributeCrossImage } from "./client/cross-image";
 import { contributeRichMessage } from "./client/rich-message";
 import { FanframeSettings } from "./client/settings";
+import { contributeStatusByProjectSidebarView } from "./client/sidebar-status-projects";
 import { FANFRAME_DARK_THEME, FANFRAME_LIGHT_THEME } from "./client/themes";
 import { FanframeVisualizeCard } from "./client/visualize";
 import { installFanframeWeb } from "./client/web";
@@ -32,8 +33,10 @@ export default function contribute(client: PluginClientContext) {
   const cleanupCrossImage = contributeCrossImage(client);
   const cleanupAskQuestion = contributeAskQuestion(client);
   const cleanupRichMessage = contributeRichMessage(client);
+  const removeSidebarView = contributeStatusByProjectSidebarView(client);
 
   return () => {
+    removeSidebarView();
     cleanupRichMessage();
     cleanupAskQuestion();
     cleanupCrossImage();

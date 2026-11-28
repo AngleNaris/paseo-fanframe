@@ -93,6 +93,19 @@ export function FanframeSettings({ theme, layout }: PluginSurfaceProps) {
         </SettingsCard>
       </SettingsSection>
 
+      <SettingsSection title="自定义侧栏视图 · Sidebar View">
+        <SettingsCard>
+          <View style={{ padding: 12, gap: 6 }}>
+            <Text style={{ color: c.foreground, fontSize: 14, fontWeight: "600" }}>
+              状态 · 按项目分组（Status · By Project）
+            </Text>
+            <Text style={{ color: c.foregroundMuted, fontSize: 13 }}>
+              可在「设置 → 侧边栏 → 侧边栏视图（Settings → Sidebar → Sidebar view）」切换，顶部暂存近期活跃项目（可自定义时间区间），下方按状态与项目左对齐分组，支持时间 / 工作区首字 / 手动三种排序（支持桌面、网页与手机端）。
+            </Text>
+          </View>
+        </SettingsCard>
+      </SettingsSection>
+
       <SettingsSection
         title="媒体预览访问范围 · Media Preview Scope"
         info="默认仅允许服务端自动读取当前对话工作区（workspace）内的媒体/文档文件。如需预览工作区外的目录，请在此显式添加绝对路径（按当前主机独立生效）。"

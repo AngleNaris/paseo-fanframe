@@ -38,7 +38,8 @@
 - **Perceptual 3-Tier Prose Layering** — Uses CSS Custom Highlight API + OKLab equal-step luminance tiers (plus steel-blue brackets and warm-amber numbers) to give dense paragraphs effortless visual rhythm without altering text selection or copy behavior.
 - **Restrained Motion** — Subtle micro-transitions for controls, square-orbit running spinners, and smooth expand/collapse feedback that respects `prefers-reduced-motion`.
 
-### 🧭 Sidebar Density · 侧栏布局优化
+### 🧭 Sidebar Density & Views · 侧栏布局与自定义视图
+- **Status · By Project Sidebar View (`状态 · 按项目分组`)** — A cross-platform custom sidebar view (`Settings → Sidebar → Sidebar view`) with Paseo's native row style & running-ring animations, a top configurable recently active projects staging section (hosting running + recently active projects without a duplicate Working group), flush-left status + project grouping without tree indentation or project count badges, time / workspace-initial / manual sort modes, device-persisted state, instant filtering, quick `+` creation, and row actions (rename, pin, archive).
 - **3-Column Top Navigation Grid** — Compresses the top sidebar links (`History`, `Search`, `Schedules`, and plugin items) into a compact 3-column icon-left/text-right grid with automatic ellipsis, cutting header height in half on both desktop and mobile web.
 - **Unified 28px Row Cadence** — Aligns project rows, workspace rows, and nav buttons to the same clean 28px height.
 - **Project-Matched Title Colors** — Automatically tints project titles to match their letter-badge icon colors for instant visual scanning.
